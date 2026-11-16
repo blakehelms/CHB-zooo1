@@ -37,3 +37,4 @@
 !/app/LAUNCH.sh
 !/app/INSTALL.sh
 !/app/zooo1/__main__.py
+!/release/requirements-pi-qualified.txt

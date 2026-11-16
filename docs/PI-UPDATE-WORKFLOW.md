@@ -113,6 +113,16 @@ Replace PI2_HEADSET_ADDRESS below with that headset's Bluetooth address; do not 
 
 INSTALL.sh is the existing reviewed one-time provisioner for 64-bit Pi OS/Python 3.13.
 It requires Internet and OS-package administration, and is never run by Update zooo1.
+Before qualifying this NEW Pi 2 environment, match the reviewed dependency versions:
+
+    .venv/bin/python -m pip install --no-deps -r ~/src/CHB-zooo1/release/requirements-pi-qualified.txt
+    .venv/bin/python -m pip check
+    .venv/bin/python scripts/check-runtime.py
+
+This is initial provisioning only. Do not run these package-changing commands on Pi 1
+or an existing working Pi 2. If OS/Python/libc differ, stop and provision a compatible
+OS/environment separately rather than overriding the updater checks.
+
 Then bootstrap, create the desktop launcher, and run the normal launcher to establish
 Pi 2's own login and bench-qualify it before research. No existing auth is copied.
 
