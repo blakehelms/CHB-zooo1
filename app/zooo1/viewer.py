@@ -6,7 +6,7 @@ import subprocess
 import sys
 import time
 
-from .controller import ADDRESS
+from .controller import ADDRESS, selected_address
 from .muse import MuseSource
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -51,22 +51,34 @@ def run_viewer(root=ROOT, wait_seconds=300):
             print('Viewer already open or waiting for EEG.', flush=True)
             return
         # Reuse the existing reviewed dependency/provenance check, never connect().
-        executable, _inlet, resolve = MuseSource(ADDRESS)._dependencies()
+        address = selected_address(root)
+        executable, _inlet, resolve = MuseSource(address)._dependencies()
         deadline = time.monotonic() + wait_seconds
         print('Waiting up to 300 seconds for the existing EEG LSL stream.', flush=True)
         while time.monotonic() < deadline:
-            matches = resolve(timeout=0.5, source_id=ADDRESS + '_eeg', minimum=2)
-            matches = [s for s in matches if s.source_id == ADDRESS + '_eeg']
+            address = selected_address(root)
+            matches = resolve(timeout=0.5, source_id=address + '_eeg', minimum=2)
+            matches = [s for s in matches if s.source_id == address + '_eeg']
             if len(matches) > 1:
                 raise RuntimeError('Ambiguous EEG stream; viewer not opened.')
             if matches and matches[0].stype == 'EEG':
                 # Inherit the lock as well: a surviving GUI still excludes duplicates
                 # if this supervisor is unexpectedly killed. No restart loop.
                 process = subprocess.Popen(
-                    [str(executable), 'view', '--address', ADDRESS],
+                    [str(executable), 'view', '--address', address],
                     stdin=subprocess.DEVNULL, pass_fds=(lock.fileno(),))
-                code = process.wait()
-                print(f'Viewer closed (exit {code}); reopen separately if needed.', flush=True)
+                while process.poll() is None and selected_address(root) == address:
+                    time.sleep(.25)
+                if process.poll() is None:
+                    process.terminate()
+                    try:
+                        process.wait(timeout=2)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait(timeout=2)
+                    deadline = time.monotonic() + wait_seconds
+                    continue
+                print(f'Viewer closed (exit {process.returncode}); reopen separately if needed.', flush=True)
                 return
             time.sleep(1)
         print('No EEG stream found. Turn on headset and reopen the viewer separately.', flush=True)

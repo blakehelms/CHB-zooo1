@@ -13,6 +13,41 @@ from .storage import LocalTestStorage
 ADDRESS = json.loads((Path(__file__).resolve().parent.parent / '.local' / 'zooo1-updater' / 'device.json').read_text())['muse_address']
 ACTIVE = {'recording', 'saving'}
 
+# Public device choices explicitly approved by the lab owner. Selected default stays local.
+HEADSET_CHOICES = (
+    {"address": "00:55:DA:B9:EC:25", "label": "Muse EC25"},
+    {"address": "00:55:DA:B9:EC:29", "label": "Muse EC29"},
+)
+
+def selected_address(root):
+    path = Path(root) / '.local' / 'zooo1-updater' / 'device.json'
+    if not path.exists():
+        return ADDRESS
+    value = json.loads(path.read_text()).get('muse_address')
+    if value not in {h['address'] for h in HEADSET_CHOICES}:
+        raise ValueError('The local headset setting is not one of the approved Muse devices.')
+    return value
+
+
+class AcquisitionCancel:
+    """Cancel a connection on shutdown or selection, without creating another owner."""
+    def __init__(self, stop, switch):
+        self.stop, self.switch = stop, switch
+
+    def is_set(self):
+        return self.stop.is_set() or self.switch.is_set()
+
+    def wait(self, timeout):
+        deadline = time.monotonic() + timeout
+        while not self.is_set():
+            left = deadline - time.monotonic()
+            if left <= 0:
+                return False
+            self.stop.wait(min(.05, left))
+        return True
+
+
+
 
 def validate_form(data):
     """Provisional fields; identifiers stay only in this request, never in storage."""
@@ -83,7 +118,11 @@ class Controller:
         self.root = Path(root)
         self.lock = threading.RLock()
         self.stop = threading.Event()
-        self.source_factory = source_factory or (lambda: MuseSource(ADDRESS))
+        self.address = selected_address(self.root)
+        self.requested_address = None
+        self.switch_requested = threading.Event()
+        self.connection_cancel = AcquisitionCancel(self.stop, self.switch_requested)
+        self.source_factory = source_factory or (lambda: MuseSource(self.address))
         self.writer_factory = writer_factory
         self.writer = None
         self.source = None
@@ -146,8 +185,11 @@ class Controller:
     def snapshot(self):
         with self.lock:
             now = time.time()
-            fresh = self.last is not None and time.monotonic() - self.last < 3
+            fresh = not self.switch_requested.is_set() and self.last is not None and time.monotonic() - self.last < 3
             return dict(state=self.state, headset=self.headset, detail=self.detail,
+                        headset_address=self.address, headset_options=list(HEADSET_CHOICES),
+                        headset_requested=self.requested_address,
+                        can_switch_headset=self.state not in ACTIVE and not self.switch_requested.is_set() and self.connection_issue != 'cleanup',
                         eeg_fresh=fresh, connection_issue=self.connection_issue,
                         storage=self.storage, session_id=self.session_id,
                         elapsed=max(0, (self.ended or now) - self.started) if self.started else 0,
@@ -175,7 +217,7 @@ class Controller:
                 self.storage = 'opening'
                 self._persist()
                 self.writer.begin(dict(session_id=self.session_id, started_utc=self.started,
-                                       headset_id=ADDRESS, synthetic=False, purpose='NO PARTICIPANTS: BENCH ONLY'), self.channels)
+                                       headset_id=self.address, synthetic=False, purpose='NO PARTICIPANTS: BENCH ONLY'), self.channels)
                 self._event('manual_start')
                 self.storage = 'writing'
                 self._persist()
@@ -254,9 +296,73 @@ class Controller:
             self.source.close()
             self.source = None
 
+
+    def choose_headset(self, address):
+        if address not in {h['address'] for h in HEADSET_CHOICES}:
+            raise ValueError('Choose one of the two approved Muse headsets.')
+        with self.lock:
+            if self.state in ACTIVE or self.writer is not None:
+                raise ValueError('End the recording and wait for saving before changing headsets.')
+            if self.connection_issue == 'cleanup':
+                raise ValueError('Restart zooo1 before changing headsets after a cleanup failure.')
+            if self.switch_requested.is_set():
+                raise ValueError('Wait for the current headset change to finish.')
+            if address == self.address:
+                return
+            self.requested_address = address
+            self.switch_requested.set()
+            self.headset = 'switching'
+            self.last = self.last_source = None
+            self.points.clear()
+            self.detail = 'Changing headset. Waiting for the previous connection to stop.'
+
+    def _apply_headset_choice(self):
+        """Acquisition worker only: close owned source before persisting/using a new address."""
+        with self.lock:
+            if self.state in ACTIVE or self.writer is not None:
+                raise RuntimeError('Refusing headset change while a writer is active.')
+            try:
+                self._close_source()
+                path = self.root / '.local' / 'zooo1-updater' / 'device.json'
+                settings = json.loads(path.read_text()) if path.exists() else {'format': 1}
+                settings['muse_address'] = self.requested_address
+                path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+                temp = path.with_suffix('.tmp')
+                with temp.open('w') as f:
+                    os.chmod(temp, 0o600)
+                    json.dump(settings, f)
+                    f.flush()
+                    os.fsync(f.fileno())
+                temp.replace(path)
+                fd = os.open(path.parent, os.O_RDONLY)
+                try:
+                    os.fsync(fd)
+                finally:
+                    os.close(fd)
+                self.address = self.requested_address
+                self.requested_address = None
+                self.channels = []
+                self.last = self.last_source = None
+                self.points.clear()
+                self.headset = 'unavailable'
+                self.connection_issue = None
+                self.detail = 'Headset selected. Waiting for a verified EEG stream.'
+                self.switch_requested.clear()
+                return True
+            except Exception:
+                self.headset = 'unavailable'
+                self.connection_issue = 'cleanup'
+                self.detail = 'Headset change could not finish safely. Restart zooo1 before reconnecting.'
+                return False
+
+
     def run(self):
         attempts = 0
         while not self.stop.is_set():
+            if self.switch_requested.is_set():
+                if not self._apply_headset_choice():
+                    return
+                attempts = 0
             if self.source is None:
                 with self.lock:
                     self.connection_issue = None
@@ -264,8 +370,11 @@ class Controller:
                     self.detail = 'Looking for the known Muse headset.'
                 candidate = self.source_factory()
                 try:
-                    channels = candidate.connect(self.stop)
+                    channels = candidate.connect(self.connection_cancel)
                     with self.lock:
+                        if self.switch_requested.is_set() or self.stop.is_set():
+                            candidate.close()
+                            continue
                         self.source = candidate
                         self.channels = channels
                         self.connection_issue = None
@@ -284,6 +393,8 @@ class Controller:
                             self.connection_issue = 'cleanup'
                             self.detail = 'Headset cleanup failed. Restart the service before reconnecting.'
                         return  # Never create a competing Bluetooth owner.
+                    if self.switch_requested.is_set():
+                        continue
                     attempts += 1
                     with self.lock:
                         self.headset = 'unavailable'
@@ -291,11 +402,13 @@ class Controller:
                         self.detail = ('Headset connection software is unavailable. Ask the researcher to check the reviewed OpenMuse environment. Retrying automatically.'
                                        if self.connection_issue == 'dependencies' else
                                        'Headset not connected. Check power, Bluetooth and range. Retrying automatically.')
-                    self.stop.wait(min(60, 5 * 2 ** min(attempts, 4)))
+                    self.connection_cancel.wait(min(60, 5 * 2 ** min(attempts, 4)))
                     continue
             try:
-                samples = self.source.read(self.stop)
+                samples = self.source.read(self.connection_cancel)
                 with self.lock:
+                    if self.switch_requested.is_set():
+                        continue
                     if samples:
                         # Gaps / backward clocks terminate the current recording. Never concatenate recovery.
                         times = [s.source_time for s in samples]
@@ -319,6 +432,8 @@ class Controller:
                         raise ConnectionError('No fresh samples')
                 self.stop.wait(.02)
             except Exception:
+                if self.switch_requested.is_set():
+                    continue
                 with self.lock:
                     self._lost()
                 try:

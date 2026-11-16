@@ -364,8 +364,10 @@ def public_source(name, source):
         source = "".join(lines).encode()
     source = re.sub(rb"MuseS-[A-Fa-f0-9]{4}", b"your assigned Muse headset", source)
     # Keep any other inline device addresses out of public source; review instead of guessing.
-    if re.search(rb"(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}", source):
-        fail("Inline device address remains in source: " + name)
+    addresses = set(re.findall(rb"(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}", source))
+    approved = {b"00:55:DA:B9:EC:25", b"00:55:DA:B9:EC:29"}
+    if addresses and (name != "zooo1/controller.py" or addresses - approved):
+        fail("Unapproved inline device address remains in source: " + name)
     return source
 
 
