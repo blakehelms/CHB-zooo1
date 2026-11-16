@@ -172,14 +172,18 @@ class RouteTests(unittest.TestCase):
         self.addCleanup(self.close)
     def close(self):
         self.server.shutdown();self.worker.join(2);self.server.server_close()
-    def post(self, cookie=True, csrf=True):
+    def post(self, cookie=True, csrf=True, origin=True):
         con=http.client.HTTPConnection("127.0.0.1",self.server.server_port,timeout=2)
         headers={"Content-Type":"application/json"}
+        if origin:headers["Origin"]="http://127.0.0.1:"+str(self.server.server_port)
         if cookie:headers["Cookie"]="zooo1="+self.token
         if csrf:headers["X-CSRF"]=self.csrf
         con.request("POST","/api/headset",json.dumps({"address":B}),headers)
         response=con.getresponse();status=response.status;response.read();con.close()
         return status
+    def test_wrong_origin_is_refused(self):
+        self.assertEqual(self.post(origin=False),403)
+        self.assertFalse(self.c.switch_requested.is_set())
     def test_authentication_and_csrf_are_required(self):
         self.assertEqual(self.post(cookie=False),401)
         self.assertEqual(self.post(csrf=False),403)
