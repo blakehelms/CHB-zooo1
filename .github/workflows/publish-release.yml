@@ -1,0 +1,56 @@
+name: Publish approved zooo1 release
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'New stable version, such as v0.1.1'
+        required: true
+        type: string
+      approval:
+        description: 'After Pi 1 bench testing and source review, type APPROVE followed by the version (APPROVE v0.1.1)'
+        required: true
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: zooo1-release-publication
+  cancel-in-progress: false
+jobs:
+  publish:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.13'
+      - name: Require exact human approval of version
+        env:
+          VERSION: ${{ inputs.version }}
+          APPROVAL: ${{ inputs.approval }}
+        run: |
+          python - <<'PY'
+          import os,re
+          v=os.environ['VERSION']
+          assert re.fullmatch(r'v[0-9]+\.[0-9]+\.[0-9]+',v), 'Stable vX.Y.Z required'
+          assert os.environ['APPROVAL']=='APPROVE '+v, 'Explicit version approval required'
+          PY
+      - name: Run safety tests
+        run: python -m unittest discover -s tests -v
+      - name: Build reviewed code-only release
+        env:
+          VERSION: ${{ inputs.version }}
+        run: python tools/build_release.py "$VERSION" "dist/zooo1-$VERSION.tar.gz"
+      - name: Publish approved release (fails if version already exists)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ inputs.version }}
+          RELEASE_COMMIT: ${{ github.sha }}
+        run: |
+          printf '%s\n' 'ZOOO1_APPROVED_RELEASE=1' '' 'Approved code-only zooo1 release from the reviewed source commit below.' "Source commit: $RELEASE_COMMIT" 'Pi 1 baseline acquisition was bench tested; per-device settings remain local. Perform device acceptance checks before research use.' > release-notes.txt
+          gh release create "zooo1-$VERSION" "dist/zooo1-$VERSION.tar.gz" --target "$RELEASE_COMMIT" --title "zooo1 $VERSION" --notes-file release-notes.txt
