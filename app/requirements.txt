@@ -1,0 +1,10 @@
+# Install on the Pi using INSTALL.sh. Do not install a different package named OpenMuse.
+# The adapter requires OpenMuse 0.1.8 with reviewed GitHub source provenance.
+OpenMuse @ https://github.com/DominiqueMakowski/OpenMuse/archive/a9be252188321e269537eabf609bc207be293f8c.zip
+# Explicit upstream runtime requirements; pip resolves Linux-compatible dependencies.
+bleak>=0.21.0
+numpy>=1.24.0
+pandas>=1.5.0
+mne-lsl>=1.10.0,<2
+matplotlib>=3.5.0
+vispy>=0.12.0

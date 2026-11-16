@@ -206,5 +206,116 @@ class SafetyTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "Duplicate"):
                 u.read_release(path, "v0.1.1", u.digest(path.read_bytes()))
 
+
+    def github_record(self, version="v0.1.1", **changes):
+        tag = "zooo1-" + version
+        record = {"draft":False, "prerelease":False, "tag_name":tag,
+                  "body":"ZOOO1_APPROVED_RELEASE=1",
+                  "assets":[{"name":tag+".tar.gz","state":"uploaded","size":100,
+                             "digest":"sha256:"+"a"*64,
+                             "browser_download_url":"https://github.com/"+u.REPO+"/releases/download/"+tag+"/"+tag+".tar.gz"}]}
+        record.update(changes)
+        return record
+
+    def test_github_selects_newest_approved_stable(self):
+        records = [self.github_record("v0.2.0"), self.github_record("v0.10.0"),
+                   self.github_record("v9.0.0", draft=True),
+                   self.github_record("v8.0.0", prerelease=True),
+                   self.github_record("v7.0.0", body="not approved")]
+        with patch.object(u, "github_bytes", return_value=json.dumps(records).encode()):
+            self.assertEqual(u.approved_github_release()[0], "v0.10.0")
+
+    def test_github_does_not_install_arbitrary_main_or_unapproved_release(self):
+        with patch.object(u, "github_bytes", return_value=json.dumps([self.github_record(body="not approved")]).encode()):
+            with self.assertRaisesRegex(RuntimeError, "No approved"):
+                u.approved_github_release()
+
+    def test_github_rejects_asset_url_and_digest(self):
+        record = self.github_record()
+        record["assets"][0]["browser_download_url"] = "https://example.com/evil"
+        with patch.object(u, "github_bytes", return_value=json.dumps([record]).encode()):
+            with self.assertRaisesRegex(RuntimeError, "Unexpected release"):
+                u.approved_github_release()
+        record = self.github_record()
+        record["assets"][0]["digest"] = None
+        with patch.object(u, "github_bytes", return_value=json.dumps([record]).encode()):
+            with self.assertRaises((RuntimeError, TypeError)):
+                u.approved_github_release()
+
+    def test_github_running_app_refuses_before_network(self):
+        with (self.root / ".local/update.lock").open("a") as f:
+            fcntl.flock(f, fcntl.LOCK_SH | fcntl.LOCK_NB)
+            with patch.object(u, "github_bytes") as network:
+                with self.assertRaisesRegex(RuntimeError, "running"):
+                    u.github_update(self.root)
+                network.assert_not_called()
+
+    def test_github_bad_download_never_applies(self):
+        with patch.object(u, "proc_check"), patch.object(u, "environment", return_value=self.env), \
+             patch.object(u, "approved_github_release", return_value=("v0.1.1",self.github_record()["assets"][0],"a"*64)), \
+             patch.object(u, "github_bytes", return_value=b"bad"), patch.object(u, "apply") as apply:
+            with self.assertRaisesRegex(RuntimeError, "integrity"):
+                u.github_update(self.root)
+            apply.assert_not_called()
+        self.assert_protected()
+
+    def test_github_download_hands_verified_package_to_transaction(self):
+        artifact, sha = self.artifact()
+        raw = artifact.read_bytes()
+        asset = {"name":"zooo1-v0.1.1.tar.gz","size":len(raw),"browser_download_url":"https://github.com/test"}
+        with patch.object(u, "proc_check"), patch.object(u, "environment", return_value=self.env), \
+             patch.object(u, "approved_github_release", return_value=("v0.1.1",asset,sha)), \
+             patch.object(u, "github_bytes", return_value=raw), \
+             patch.object(u, "verify"), patch("builtins.input", return_value="INSTALL v0.1.1"):
+            u.github_update(self.root)
+        self.assertEqual(u.load_state(self.root)["version"], "v0.1.1")
+        self.assertEqual(u.load_state(self.root)["artifact_sha256"], sha)
+        self.assert_protected()
+
+    def test_device_config_survives_universal_release_and_rollback(self):
+        controller = self.root / "zooo1/controller.py"
+        controller.write_text("ADDRESS = '00:00:00:00:00:01'\n")
+        state = dict(self.state, files=u.inventory(self.root))
+        u.dump(self.sd / "state.json", state)
+        with patch.object(u, "proc_check"), patch.object(u, "environment", return_value=self.env):
+            u.capture_device(self.root)
+        settings = (self.sd / "device.json").read_bytes()
+        shared = u.public_source("zooo1/controller.py", controller.read_bytes())
+        self.assertNotIn(b"00:00:00:00:00:01", shared)
+        self.assertEqual(u.effective_identity(self.root, controller.read_bytes()),
+                         u.effective_identity(self.root, shared))
+        u.write_code(self.root, {"zooo1/controller.py":shared}, set())
+        self.assertEqual((self.sd / "device.json").read_bytes(), settings)
+        self.assert_protected()
+
+    def test_unknown_device_address_expression_is_not_evaluated(self):
+        (self.root / "zooo1/controller.py").write_text("ADDRESS = dangerous_function()\n")
+        u.dump(self.sd / "state.json", dict(self.state, files=u.inventory(self.root)))
+        with patch.object(u, "proc_check"), patch.object(u, "environment", return_value=self.env):
+            with self.assertRaisesRegex(RuntimeError, "Unknown device"):
+                u.capture_device(self.root)
+
+    def test_github_up_to_date_no_download(self):
+        u.dump(self.sd / "state.json", dict(self.state, version="v0.1.1", artifact_sha256="a"*64))
+        with patch.object(u, "proc_check"), patch.object(u, "environment", return_value=self.env), \
+             patch.object(u, "approved_github_release", return_value=("v0.1.1",{},"a"*64)), \
+             patch.object(u, "github_bytes") as network:
+            u.github_update(self.root)
+            network.assert_not_called()
+
+    def test_github_same_version_changed_bytes_refuses(self):
+        u.dump(self.sd / "state.json", dict(self.state, version="v0.1.1", artifact_sha256="a"*64))
+        with patch.object(u, "proc_check"), patch.object(u, "environment", return_value=self.env), \
+             patch.object(u, "approved_github_release", return_value=("v0.1.1",{},"b"*64)):
+            with self.assertRaisesRegex(RuntimeError, "Published bytes changed"):
+                u.github_update(self.root)
+
+    def test_github_older_release_refuses(self):
+        u.dump(self.sd / "state.json", dict(self.state, version="v0.2.0", artifact_sha256="a"*64))
+        with patch.object(u, "proc_check"), patch.object(u, "environment", return_value=self.env), \
+             patch.object(u, "approved_github_release", return_value=("v0.1.1",{},"b"*64)):
+            with self.assertRaisesRegex(RuntimeError, "older"):
+                u.github_update(self.root)
+
 if __name__ == "__main__":
     unittest.main()

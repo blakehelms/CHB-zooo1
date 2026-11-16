@@ -1,0 +1,2 @@
+# Optional native viewer binding. The browser monitor and acquisition do not need it.
+PyQt6>=6.7,<7

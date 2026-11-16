@@ -178,7 +178,7 @@ def bootstrap(root):
         fail("Run on the Pi as the ordinary lab user.")
     with stopped(root):
         sd = state_dir(root)
-        if sd.exists():
+        if sd.exists() and any(p.name != "device.json" for p in sd.iterdir()):
             fail("Already initialized (or partial initialization). Inspect before proceeding.")
         for name in ("zooo1/__main__.py", "scripts/check-runtime.py", "LAUNCH.sh"):
             p = root / name
@@ -192,7 +192,7 @@ def bootstrap(root):
         files = inventory(root)
         if not files:
             fail("No application source found.")
-        sd.mkdir(mode=0o700)
+        sd.mkdir(mode=0o700, exist_ok=True)
         original = (root / "zooo1/__main__.py").read_bytes()
         (sd / "original-main.py").write_bytes(original)
         (root / "zooo1/__main__.py").write_text(GATE)
@@ -208,8 +208,9 @@ def release(root, version, output):
         if (state_dir(root) / "pending.json").exists():
             fail("Recover incomplete transaction first.")
         verify(root)
-        files = inventory(root)
-        if sum((root / n).stat().st_size for n in files) > LIMIT:
+        data = {n: public_source(n, safe_path(root, n).read_bytes()) for n in inventory(root)}
+        files = {n: digest(raw) for n, raw in data.items()}
+        if sum(len(raw) for raw in data.values()) > LIMIT:
             fail("Source package exceeds limit.")
         manifest = {"format": 1, "version": version, "files": files, "environment": environment(root)}
         # Dependency input text is part of the reviewed release. Devices require exact equality.
@@ -224,11 +225,15 @@ def release(root, version, output):
             with tarfile.open(output, "w:gz") as tar:
                 tar.add(p, arcname="release.json", recursive=False)
                 for n in files:
-                    tar.add(safe_path(root, n), arcname=n, recursive=False)
+                    import io
+                    member = tarfile.TarInfo(n)
+                    member.size = len(data[n])
+                    member.mode = 0o600
+                    tar.addfile(member, io.BytesIO(data[n]))
         print("Prepared candidate ONLY. Test on Pi 1 before approving for Pi 2.")
         print("Version:", version)
         print("SHA256:", digest(output.read_bytes()))
-        print("Keep artifact and digest outside public Git until all source is cleared for publication.")
+        print("Candidate strips the device address. Review all source and bench-test before approving publication.")
 
 def read_release(path, version, sha):
     if not VERSION.fullmatch(version) or not re.fullmatch("[a-f0-9]{64}", sha):
@@ -278,6 +283,91 @@ def device_identity(source):
             if node.target.id in names:
                 values[node.target.id] = ast.dump(node.value, include_attributes=False)
     return values
+
+
+# Only this reviewed expression can resolve an on-device headset address in releases.
+DEVICE_EXPR = "json.loads((Path(__file__).resolve().parent.parent / '.local' / 'zooo1-updater' / 'device.json').read_text())['muse_address']"
+
+def address_assignment(source):
+    for node in ast.parse(source).body:
+        if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "ADDRESS" for t in node.targets):
+            return node
+    return None
+
+def valid_address(value):
+    if not isinstance(value, str) or not re.fullmatch(r"(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}", value):
+        fail("This device needs its own valid Muse address before installing a release.")
+    return value
+
+def saved_address(root):
+    return valid_address(json.loads((state_dir(root) / "device.json").read_text())["muse_address"])
+
+
+def configure_device(root, address):
+    address = valid_address(address)
+    with stopped(root):
+        sd = state_dir(root)
+        path = sd / "device.json"
+        if path.exists():
+            if saved_address(root) != address:
+                fail("Device settings already exist; preserve them and review changes separately.")
+            print("This device is already configured.")
+            return
+        node = address_assignment((root / "zooo1/controller.py").read_bytes())
+        if node is None:
+            fail("Unknown controller configuration.")
+        if isinstance(node.value, ast.Constant) and node.value.value != address:
+            fail("Address differs from this Pi's existing controller; use capture-device.")
+        if not isinstance(node.value, ast.Constant) and ast.dump(node.value) != ast.dump(ast.parse(DEVICE_EXPR, mode="eval").body):
+            fail("Unknown controller device expression.")
+        sd.mkdir(mode=0o700, exist_ok=True)
+        dump(path, {"format": 1, "muse_address": address})
+        print("Saved this Pi's headset address locally; existing settings were not overwritten.")
+
+
+def capture_device(root):
+    with stopped(root):
+        state = load_state(root)
+        check_clean(root, state)
+        source = (root / "zooo1/controller.py").read_bytes()
+        node = address_assignment(source)
+        if node is None:
+            fail("Cannot locate this device's existing headset address.")
+        if isinstance(node.value, ast.Constant):
+            address = valid_address(node.value.value)
+        elif ast.dump(node.value) == ast.dump(ast.parse(DEVICE_EXPR, mode="eval").body):
+            address = saved_address(root)
+        else:
+            fail("Unknown device address configuration. Preserve and review it manually.")
+        path = state_dir(root) / "device.json"
+        if path.exists():
+            if saved_address(root) != address:
+                fail("Existing device settings disagree with the installed controller.")
+        else:
+            dump(path, {"format": 1, "muse_address": address})
+        print("Preserved this Pi's headset settings locally. No device address uploaded.")
+
+def effective_identity(root, source):
+    values = device_identity(source)
+    node = address_assignment(source)
+    if node is not None and ast.dump(node.value) == ast.dump(ast.parse(DEVICE_EXPR, mode="eval").body):
+        values["ADDRESS"] = ast.dump(ast.Constant(value=saved_address(root)))
+    return values
+
+def public_source(name, source):
+    if name == "zooo1/controller.py":
+        node = address_assignment(source)
+        if node is None:
+            fail("Missing controller device configuration.")
+        lines = source.decode().splitlines(keepends=True)
+        lines[node.lineno - 1:node.end_lineno] = ["ADDRESS = " + DEVICE_EXPR + "\n"]
+        source = "".join(lines).encode()
+    source = re.sub(rb"MuseS-[A-Fa-f0-9]{4}", b"your assigned Muse headset", source)
+    # Keep any other inline device addresses out of public source; review instead of guessing.
+    if re.search(rb"(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}", source):
+        fail("Inline device address remains in source: " + name)
+    return source
+
 
 def write_code(root, data, remove):
     for n in sorted(set(data) | set(remove)):
@@ -342,7 +432,7 @@ def apply(root, artifact, version, sha):
         controller = "zooo1/controller.py"
         if controller not in data:
             fail("Release must retain the device controller.")
-        if device_identity((root / controller).read_bytes()) != device_identity(data[controller]):
+        if effective_identity(root, (root / controller).read_bytes()) != effective_identity(root, data[controller]):
             fail("Embedded headset configuration differs; keep this device identity unchanged.")
         paths = set(state["files"]) | set(data)
         for n in paths:
@@ -357,7 +447,7 @@ def apply(root, artifact, version, sha):
             write_code(root, data, set(state["files"]) - set(data))
             verify(root)
             dump(sd / "state.json", {"version": version, "files": manifest["files"],
-                                    "environment": manifest["environment"]})
+                                    "environment": manifest["environment"], "artifact_sha256": sha})
             dump(sd / "previous.json", {"backup": backup.name, "paths": sorted(paths)})
             (sd / "pending.json").unlink()
         except BaseException:
@@ -390,6 +480,114 @@ def recover(root, rollback=False):
             p.unlink()
         print("Restored", load_state(root)["version"], "; data and .venv untouched.")
 
+
+REPO = "blakehelms/CHB-zooo1"
+STABLE = re.compile(r"v([0-9]+)\.([0-9]+)\.([0-9]+)\Z")
+
+def stable_key(version):
+    match = STABLE.fullmatch(version)
+    if not match:
+        fail("Approved GitHub versions must be stable vX.Y.Z releases.")
+    return tuple(map(int, match.groups()))
+
+def github_bytes(url, limit):
+    from urllib.request import Request, build_opener, HTTPRedirectHandler
+    from urllib.parse import urlsplit
+    from urllib.error import HTTPError, URLError
+    hosts = {"api.github.com", "github.com", "release-assets.githubusercontent.com",
+             "objects.githubusercontent.com"}
+    def validate(address):
+        p = urlsplit(address)
+        if p.scheme != "https" or p.hostname not in hosts or p.username or p.password or p.port not in (None, 443):
+            fail("Unexpected GitHub download destination.")
+    class Redirects(HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            validate(newurl)
+            return super().redirect_request(req, fp, code, msg, headers, newurl)
+    validate(url)
+    req = Request(url, headers={"User-Agent":"zooo1-manual-updater",
+                               "Accept":"application/vnd.github+json" if url.startswith("https://api.github.com/") else "application/octet-stream"})
+    try:
+        with build_opener(Redirects()).open(req, timeout=30) as response:
+            validate(response.geturl())
+            raw = response.read(limit + 1)
+            if len(raw) > limit:
+                fail("GitHub response exceeds size limit.")
+            return raw
+    except (HTTPError, URLError, TimeoutError) as exc:
+        fail("Cannot retrieve approved release from GitHub. No application files changed. " + str(exc))
+
+def approved_github_release():
+    approved = []
+    for page in range(1, 11):
+        items = json.loads(github_bytes(
+            "https://api.github.com/repos/" + REPO + "/releases?per_page=100&page=" + str(page),
+            2 * 1024 * 1024))
+        if not isinstance(items, list):
+            fail("Unexpected GitHub release response.")
+        for release in items:
+            if release.get("draft") or release.get("prerelease"):
+                continue
+            tag = release.get("tag_name", "")
+            if not tag.startswith("zooo1-") or not STABLE.fullmatch(tag[6:]):
+                continue
+            if "ZOOO1_APPROVED_RELEASE=1" not in (release.get("body") or "").splitlines():
+                continue
+            version = tag[6:]
+            wanted = "zooo1-" + version + ".tar.gz"
+            assets = [a for a in release.get("assets", []) if a.get("name") == wanted]
+            if len(assets) != 1:
+                fail("Approved release is missing its unique application asset: " + version)
+            asset = assets[0]
+            if asset.get("state") != "uploaded" or not 0 < asset.get("size", 0) <= LIMIT:
+                fail("Approved release asset is incomplete or too large.")
+            checksum = asset.get("digest") or ""
+            if not re.fullmatch(r"sha256:[a-f0-9]{64}", checksum):
+                fail("GitHub release asset has no valid SHA256 digest.")
+            expected = "https://github.com/" + REPO + "/releases/download/" + tag + "/" + wanted
+            if asset.get("browser_download_url") != expected:
+                fail("Unexpected release asset location.")
+            approved.append((stable_key(version), version, asset, checksum[7:]))
+        if len(items) < 100:
+            break
+    else:
+        fail("Release list exceeds limit; cannot establish newest approved version.")
+    if not approved:
+        fail("No approved zooo1 application release is published on GitHub yet.")
+    approved.sort(key=lambda item: item[0], reverse=True)
+    if len(approved) > 1 and approved[0][0] == approved[1][0]:
+        fail("Duplicate approved version.")
+    return approved[0][1:]
+
+def github_update(root):
+    # Refuse before networking when acquiring, recording or an interrupted update exists.
+    with stopped(root):
+        if (state_dir(root) / "pending.json").exists():
+            fail("Incomplete update. Run recover first.")
+        state = load_state(root)
+        check_clean(root, state)
+    print("Checking GitHub for the newest approved zooo1 release...", flush=True)
+    version, asset, sha = approved_github_release()
+    current = state["version"]
+    if current != "zip-baseline":
+        if stable_key(version) < stable_key(current):
+            fail("GitHub version is older than this device. Use explicit local rollback if needed.")
+        if version == current:
+            if state.get("artifact_sha256") != sha:
+                fail("Published bytes changed under an existing version. Refusing replacement.")
+            print("zooo1 is already up to date:", current)
+            return
+    print("Approved release:", version, "| installed:", current)
+    with tempfile.TemporaryDirectory(prefix="zooo1-github-") as td:
+        artifact = Path(td) / asset["name"]
+        raw = github_bytes(asset["browser_download_url"], LIMIT)
+        if len(raw) != asset["size"] or digest(raw) != sha:
+            fail("Downloaded GitHub release failed integrity verification.")
+        artifact.write_bytes(raw)
+        # apply rechecks stopped state and local source after download before any code write.
+        apply(root, artifact, version, sha)
+
+
 def desktop(root, script):
     if '"' in str(root) or '"' in str(script) or "%" in str(root) or "%" in str(script):
         fail("Unsupported desktop path characters.")
@@ -400,7 +598,7 @@ def desktop(root, script):
     if path.exists():
         fail("Desktop launcher already exists; inspect it before replacing.")
     path.write_text('[Desktop Entry]\nType=Application\nName=Update zooo1\nTerminal=true\n'
-                    'Exec=python3 "' + str(script) + '" --root "' + str(root) + '" interactive\n'
+                    'Exec=python3 "' + str(script) + '" --root "' + str(root) + '" github\n'
                     'Icon=system-software-update\nCategories=Utility;\n')
     path.chmod(0o700)
     print("Created", path)
@@ -410,8 +608,10 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--root", type=Path, default=Path.home() / "Downloads/zooo1-raspberry-pi")
     sub = p.add_subparsers(dest="command", required=True)
-    for cmd in ("bootstrap", "desktop", "recover", "rollback", "interactive"):
+    for cmd in ("bootstrap", "desktop", "recover", "rollback", "interactive", "github", "capture-device"):
         sub.add_parser(cmd)
+    c = sub.add_parser("configure-device")
+    c.add_argument("address")
     r = sub.add_parser("release")
     r.add_argument("version")
     r.add_argument("output", type=Path)
@@ -428,6 +628,12 @@ def main():
             bootstrap(root)
         elif args.command == "desktop":
             desktop(root, Path(__file__).resolve())
+        elif args.command == "configure-device":
+            configure_device(root, args.address)
+        elif args.command == "capture-device":
+            capture_device(root)
+        elif args.command == "github":
+            github_update(root)
         elif args.command == "release":
             release(root, args.version, args.output)
         elif args.command == "install":
@@ -443,10 +649,10 @@ def main():
             apply(root, artifact, version, sha)
     except (Exception, KeyboardInterrupt) as exc:
         print("Update refused or failed:", str(exc), file=sys.stderr)
-        if args.command == "interactive":
+        if args.command in ("interactive", "github"):
             input("Press Enter to close.")
         return 1
-    if args.command == "interactive":
+    if args.command in ("interactive", "github"):
         input("Press Enter to close.")
     return 0
 

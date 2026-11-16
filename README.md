@@ -1,26 +1,22 @@
-# CHB-zooo1 — manual release updater
+# CHB-zooo1
 
-This public repository contains **only generic deployment tooling, tests and instructions**.
-It does not contain the lab application, credentials, password hashes, headset settings,
-research recordings, journals, virtual environments or application release artifacts.
+Reviewed zooo1 application source and a manual GitHub release updater for Raspberry Pi.
 
-Pi 1 develops and bench-tests candidates. Pi 2 installs only an explicitly approved,
-versioned candidate. There is no automatic update, boot task, service, cron job or
-"pull latest" operation. Neither Pi has been accessed or modified by this change.
+**Update zooo1** checks this public GitHub repository for the newest explicitly approved
+stable application release, downloads it without a GitHub account/token, verifies its
+checksum and compatibility, and asks before installation. It refuses while zooo1 or
+Muse is running and retains code backups for rollback. No automatic or boot updates.
 
-Start with [the Pi setup and release guide](docs/PI-UPDATE-WORKFLOW.md).
+Pi 1 develops and bench-tests releases. Pi 2 installs approved releases only.
+Source commits and pull requests do not update either device. Only a release published
+through **Publish approved zooo1 release** with explicit version approval is eligible.
 
-The updater preserves the existing ZIP installation in place. It manages a fixed list
-of application source paths, blocks while the application/viewer is running, rejects
-unapproved digests and dependency drift, and retains code backups for rollback.
-It never runs INSTALL.sh, apt, pip install, git reset or git clean against a deployment.
+Device authentication, headset address, local configuration, recordings, session
+journals and .venv stay on each Pi. No passwords, credential hashes, research data or
+environments are published. The headset address is captured from each existing
+installation into a private file before the first shared-code update.
 
-**Publication boundary:** while this repository remains public and application source
-is not approved for public release, application synchronization through this repository
-is intentionally unavailable. Transfer candidate packages privately between Pis, or
-use a separately authorized private release repository. A public GitHub Release asset
-is public too. Do not upload lab packages here.
+[Setup, click-to-update, Pi 2 installation, publishing from Pi 1 and rollback](docs/PI-UPDATE-WORKFLOW.md).
 
-Software safety tests run in GitHub Actions with synthetic fixtures. Passing them is
-not qualification of Bluetooth, acquisition, signal quality, hardware or power-loss
-recovery on a lab Pi.
+Tests run in GitHub Actions using synthetic fixtures. Passing software tests does not
+qualify Bluetooth, EEG signal quality or experiments. Each Pi needs acceptance checks.

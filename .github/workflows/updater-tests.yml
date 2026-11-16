@@ -16,3 +16,9 @@ jobs:
           python-version: '3.13'
       - name: Run generic safety tests
         run: python -m unittest discover -s tests -v
+
+      - name: Build code-only package and validate inventory
+        run: python tools/build_release.py v0.0.0 /tmp/zooo1-test.tar.gz
+
+      - name: Check provisioning shell syntax
+        run: sh -n app/LAUNCH.sh && sh -n app/INSTALL.sh

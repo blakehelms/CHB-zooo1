@@ -1,15 +1,40 @@
-# Public repository: tooling only. Default deny all other files.
+# Default deny: only reviewed source/tooling enters Git.
 *
 !/.gitignore
 !/README.md
 !/tools/
-!/tools/update_zooo1.py
+!/tools/*.py
 !/tests/
-!/tests/test_updater.py
+!/tests/*.py
 !/docs/
-!/docs/PI-UPDATE-WORKFLOW.md
+!/docs/*.md
 !/.github/
 !/.github/workflows/
-!/.github/workflows/updater-tests.yml
-# Never force-add app sources, release packages, config, credentials, password hashes,
-# journals, research data, dependency snapshots or environments.
+!/.github/workflows/*.yml
+!/release/
+!/release/qualified-runtime.json
+!/app/
+!/app/zooo1/
+!/app/zooo1/__init__.py
+!/app/zooo1/acquisition.py
+!/app/zooo1/storage.py
+!/app/zooo1/experiments.py
+!/app/zooo1/muse.py
+!/app/zooo1/controller.py
+!/app/zooo1/viewer.py
+!/app/zooo1/web.py
+!/app/zooo1/static/
+!/app/zooo1/static/index.html
+!/app/zooo1/static/app.js
+!/app/zooo1/static/style.css
+!/app/scripts/
+!/app/scripts/check-runtime.py
+!/app/requirements.txt
+!/app/requirements-viewer.txt
+# Never force-add device settings, credentials, auth/password hashes, raw recordings,
+# journals, research data, .local, environments or local candidate/backup archives.
+
+!/app/LAUNCH.sh
+!/app/INSTALL.sh
+!/app/zooo1/__main__.py
+!/release/requirements-pi-qualified.txt
