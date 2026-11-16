@@ -1,13 +1,13 @@
 'use strict';
 const app=document.querySelector('#app'), nav=document.querySelector('#nav');
-let access={}, screen='', state=null, busy=false, online=false, setupAccepted=false;
+let access={}, screen='', state=null, busy=false, online=false, setupAccepted=false, headsetDirty=false;
 const monitor=location.pathname==='/monitor';
 const $=id=>document.getElementById(id);
 const duration=n=>{n=Math.floor(n||0);return [Math.floor(n/3600),Math.floor(n/60)%60,n%60].map(x=>String(x).padStart(2,'0')).join(':')};
 const labels={ready:'Ready',recording:'Recording',saving:'Saving',complete:'Complete',interrupted:'Interrupted',storage_failure:'Storage failure'};
 const storageLabels={not_ready:'Not ready',bench_ready:'Bench storage ready',opening:'Opening',writing:'Writing bench data',saved_bench:'Bench files finalized',partial_bench:'Partial bench files finalized',failed:'Write failed',incomplete:'Incomplete after restart'};
 const headsetReady=s=>s.headset==='connected'&&s.eeg_fresh===true;
-function showError(message){if($('error'))$('error').textContent=message}
+function showError(message){if($('error'))$('error').textContent=message;if($('headset-selection-error'))$('headset-selection-error').textContent=message}
 function render(name){if(screen===name)return;screen=name;app.replaceChildren($(name+'-template').content.cloneNode(true));
  if(name==='login'){
   $('setup-note').hidden=!access.setup;
@@ -26,9 +26,26 @@ function render(name){if(screen===name)return;screen=name;app.replaceChildren($(
  if($('new'))$('new').onclick=()=>{if(online&&confirm('Prepare a new session? The previous outcome remains in local storage.'))action('/api/reset')};
  if($('marker'))$('marker').onclick=()=>action('/api/marker');
 }
-async function request(path,data){const abort=new AbortController(), timer=setTimeout(()=>abort.abort(),6000);try{const r=await fetch(path,{method:data===undefined?'GET':'POST',cache:'no-store',headers:data===undefined?{}:{'Content-Type':'application/json','X-CSRF':access.csrf||'','X-Setup':access.setup_token||''},body:data===undefined?undefined:JSON.stringify(data),signal:abort.signal});const result=await r.json();if(!r.ok){if(r.status===401){access.authenticated=false;screen='';render('login');nav.hidden=true}throw Error(result.error||'Request failed.')}return result}finally{clearTimeout(timer)}}
+async function request(path,data){const abort=new AbortController(), timer=setTimeout(()=>abort.abort(),6000);try{const r=await fetch(path,{method:data===undefined?'GET':'POST',cache:'no-store',headers:data===undefined?{}:{'Content-Type':'application/json','X-CSRF':access.csrf||'','X-Setup':access.setup_token||''},body:data===undefined?undefined:JSON.stringify(data),signal:abort.signal});const result=await r.json();if(!r.ok){if(r.status===401){access.authenticated=false;screen='';render('login');nav.hidden=true;$('headset-choice').hidden=true}throw Error(result.error||'Request failed.')}return result}finally{clearTimeout(timer)}}
 async function action(path,data={}){if(busy)return;busy=true;showError('');if(path==='/api/end'){if($('end'))$('end').disabled=true;if($('session-title'))$('session-title').textContent='Ending session…';if($('save-status'))$('save-status').textContent='End requested. Waiting for the local service to confirm finalization.';if($('m-state'))$('m-state').textContent='End requested'}try{await request(path,data);await refresh()}catch(e){showError(e.name==='AbortError'?'The service did not respond. Check the monitor before retrying.':e.message)}finally{busy=false}}
+function paintHeadsets(s){
+ const select=$('headset-select'), button=$('headset-apply'), options=s.headset_options||[];
+ $('headset-choice').hidden=!access.authenticated;
+ const key=JSON.stringify(options);
+ if(select.dataset.options!==key){
+  select.replaceChildren(...options.map(h=>{const o=document.createElement('option');o.value=h.address;o.textContent=h.label+' · '+h.address;return o}));
+  select.dataset.options=key;
+ }
+ if(!headsetDirty)select.value=s.headset_requested||s.headset_address||'';
+ const enabled=online&&s.can_switch_headset&&!busy;
+ select.disabled=!enabled;button.disabled=!enabled||select.value===s.headset_address;
+ const selected=options.find(h=>h.address===s.headset_address);
+ $('headset-selection-status').textContent=s.headset_requested?'Changing headset; waiting for the old connection to stop.':!s.can_switch_headset?['recording','saving'].includes(s.state)?'Headset selection is locked until recording and saving finish.':s.detail:'Selected: '+(selected?.label||'Muse')+'. Use a different headset on the other Pi when running both.';
+}
+$('headset-select').onchange=()=>{headsetDirty=true;if(state)paintHeadsets(state)};
+$('headset-apply').onclick=async()=>{if(busy||!online||!state?.can_switch_headset)return;const address=$('headset-select').value;headsetDirty=false;setupAccepted=false;await action('/api/headset',{address})};
 function paint(s){
+ paintHeadsets(s);
  const active=['recording','saving'].includes(s.state), terminal=s.state!=='ready'&&!active;
  if(s.state!=='ready')setupAccepted=false;
  render(monitor?'monitor':s.state!=='ready'?'session':setupAccepted?'form':headsetReady(s)?'connected':'connect');
@@ -55,7 +72,7 @@ function paint(s){
  if(screen==='monitor'){
   $('network').textContent='Connected to the local acquisition service.';$('network').className='readiness';
   $('m-state').textContent=labels[s.state]||s.state;$('m-time').textContent=duration(s.elapsed);
-  $('m-headset').textContent=({connected:'Connected',connecting:'Connecting',unavailable:'Unavailable'})[s.headset];
+  $('m-headset').textContent=({connected:'Connected',connecting:'Connecting',switching:'Changing headset',unavailable:'Unavailable'})[s.headset];
   $('m-age').textContent=s.sample_age===null?'No samples received':s.sample_age.toFixed(1)+' seconds since last samples';
   $('m-storage').textContent=storageLabels[s.storage]||s.storage;
   $('m-count').textContent=s.confirmed.toLocaleString()+' confirmed / '+s.received.toLocaleString()+' received';
@@ -72,9 +89,9 @@ function draw(s){const c=$('traces');if(!c)return;const ratio=devicePixelRatio||
  const height=h/channels.length,start=rows[0][0],span=rows.at(-1)[0]-start||1;
  channels.forEach((label,i)=>{const vals=rows.map(r=>r[i+1]),lo=Math.min(...vals),hi=Math.max(...vals),mid=(hi+lo)/2,scale=(height-25)/(hi-lo||1),y=height*(i+.5);ctx.strokeStyle='#e6e0dd';ctx.beginPath();ctx.moveTo(48,y);ctx.lineTo(w,y);ctx.stroke();ctx.fillStyle='#706a68';ctx.font='9px -apple-system, sans-serif';ctx.fillText(label,5,y+3);ctx.strokeStyle='#500000';ctx.lineWidth=1;ctx.beginPath();rows.forEach((r,j)=>{const x=50+(w-58)*(r[0]-start)/span,yy=y-(r[i+1]-mid)*scale;if(j===0||r[0]-rows[j-1][0]>.1)ctx.moveTo(x,yy);else ctx.lineTo(x,yy)});ctx.stroke()});
 }
-function disconnected(){online=false;if(screen==='connected'){render('connect')}if(screen==='connect'){$('headset-status').textContent='Connection status unavailable';$('headset-help').textContent='Connection to the local service was lost. Keep this page open; status will update when it reconnects.';}if($('network')){$('network').textContent='Remote monitor connection lost. The Pi may still be recording locally. Reconnect to confirm its status.';$('network').className='readiness warning';$('m-state').textContent='Unknown (offline)';$('m-headset').textContent='Unknown (offline)';$('m-storage').textContent='Unconfirmed (offline)';$('m-age').textContent='Live status unavailable';$('m-count').textContent='Write progress unavailable'}else if($('readiness'))$('readiness').textContent='Connection to the service lost. Reconnect before continuing.';else if($('save-status'))$('save-status').textContent='Monitor connection lost. Recording status is unknown; the Pi may still be recording.';['start','end','new','marker','headset-continue'].forEach(id=>{if($(id))$(id).disabled=true});if($('traces'))draw({points:[],channels:[]})}
+function disconnected(){online=false;$('headset-select').disabled=true;$('headset-apply').disabled=true;if(screen==='connected'){render('connect')}if(screen==='connect'){$('headset-status').textContent='Connection status unavailable';$('headset-help').textContent='Connection to the local service was lost. Keep this page open; status will update when it reconnects.';}if($('network')){$('network').textContent='Remote monitor connection lost. The Pi may still be recording locally. Reconnect to confirm its status.';$('network').className='readiness warning';$('m-state').textContent='Unknown (offline)';$('m-headset').textContent='Unknown (offline)';$('m-storage').textContent='Unconfirmed (offline)';$('m-age').textContent='Live status unavailable';$('m-count').textContent='Write progress unavailable'}else if($('readiness'))$('readiness').textContent='Connection to the service lost. Reconnect before continuing.';else if($('save-status'))$('save-status').textContent='Monitor connection lost. Recording status is unknown; the Pi may still be recording.';['start','end','new','marker','headset-continue'].forEach(id=>{if($(id))$(id).disabled=true});if($('traces'))draw({points:[],channels:[]})}
 async function refresh(){if(!access.authenticated)return;try{const s=await request('/api/state');state=s;online=true;paint(s)}catch(e){disconnected()}}
-async function bootstrap(){setupAccepted=false;try{access=await request('/api/access');nav.hidden=!access.authenticated;$('monitor-link').hidden=monitor;if(access.authenticated){screen='';await refresh()}else render('login')}catch(e){app.textContent='The local service is unavailable. Reopen zooo1 to reconnect.'}}
+async function bootstrap(){setupAccepted=false;try{access=await request('/api/access');nav.hidden=!access.authenticated;$('headset-choice').hidden=!access.authenticated;$('monitor-link').hidden=monitor;if(access.authenticated){screen='';await refresh()}else render('login')}catch(e){app.textContent='The local service is unavailable. Reopen zooo1 to reconnect.'}}
 $('logout').onclick=async()=>{await action('/api/logout');screen='';await bootstrap()};
 window.addEventListener('offline',disconnected);window.addEventListener('resize',()=>{if(monitor&&online&&state)draw(state)});
 (async()=>{await bootstrap();async function poll(){await refresh();setTimeout(poll,1000)}setTimeout(poll,1000)})();

@@ -22,3 +22,6 @@ jobs:
 
       - name: Check provisioning shell syntax
         run: sh -n app/LAUNCH.sh && sh -n app/INSTALL.sh
+
+      - name: Check browser JavaScript syntax
+        run: node --check app/zooo1/static/app.js

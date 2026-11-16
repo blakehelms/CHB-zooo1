@@ -164,7 +164,11 @@ class Handler(BaseHTTPRequestHandler):
             if not hmac.compare_digest(session[1], self.headers.get('X-CSRF', '')):
                 return self.reply(403, {'error': 'Reload this page and try again.'})
             controller = self.server.controller
-            if path == '/api/start':
+            if path == '/api/headset':
+                if set(data) != {'address'} or not isinstance(data['address'], str):
+                    raise ValueError('Choose a Muse headset.')
+                controller.choose_headset(data['address'])
+            elif path == '/api/start':
                 controller.begin(data)
             elif path == '/api/end':
                 controller.end()

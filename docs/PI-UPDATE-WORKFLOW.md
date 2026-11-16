@@ -228,3 +228,25 @@ active locks, source drift, dependency drift, archive attacks, device identity, 
 release selection, approved download integrity, unchanged-version tampering and downgrade.
 They do not start BLE or prove EEG signal quality, viewer rendering or power-loss
 behavior on hardware. Keep code updates separate from experiments.
+
+
+## Selecting either lab Muse (v0.1.2 and later)
+
+The owner explicitly requested publishing both Muse addresses as shared application
+choices. Both Pis offer Muse EC25 and Muse EC29 in the authenticated application and
+researcher monitor. Only these device identifiers are shared; credentials, authentication
+hashes, recordings, journals and selected local defaults remain private.
+
+Choose a headset and click Connect selected headset. The acquisition worker cancels
+any pending connection, closes its old source, persists the new local default, and only
+then starts the selected connection. It refuses a change during recording/saving or
+a cleanup failure. It clears old traces/freshness, so Begin cannot use the prior stream.
+New recording metadata identifies the selected headset. The optional LSL viewer follows
+the newly selected stream after closing its old view.
+
+When running two Pis together, choose different headsets. The same headset should not
+be controlled by both acquisition owners at once. No automatic switch between devices
+occurs when a headset disappears; the operator chooses the target explicitly.
+
+Fresh Pi 2 installation still requires its own researcher-password setup on first launch.
+Do not reuse or copy Pi 1's authentication file. No passwords belong in this repository.
