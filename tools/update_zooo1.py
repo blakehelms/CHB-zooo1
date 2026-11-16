@@ -134,13 +134,11 @@ def proc_check(root):
             if entry.stat().st_uid != os.getuid():
                 continue
             cmd = (entry / "cmdline").read_bytes().replace(b"\0", b" ").decode(errors="replace")
-            try:
-                cwd = (entry / "cwd").resolve(strict=True)
-            except FileNotFoundError:
-                continue
+            # cmdline is sufficient: refuse any zooo1/Muse/launcher owned by this user.
+            # Do not inspect cwd of unrelated protected desktop/system processes.
             if ("OpenMuse" in cmd or "openmuse" in cmd or
                 re.search(r"(?:^| )-m zooo1(?: |\.|$)", cmd) or
-                (cwd == root and ("LAUNCH" in cmd or "zooo1/web.py" in cmd))):
+                "LAUNCH" in cmd or "zooo1/web.py" in cmd):
                 fail("Close zooo1 and all Muse acquisition/viewer processes before updating.")
         except (FileNotFoundError, ProcessLookupError):
             continue
