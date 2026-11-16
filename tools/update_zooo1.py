@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Generic, manual zooo1 code updater. Standard library only; never installs dependencies."""
 import argparse
+import ast
 from contextlib import ExitStack, contextmanager
 import fcntl
 import hashlib
@@ -266,6 +267,20 @@ def read_release(path, version, sha):
             fail("Dependency manifest mismatch.")
         return manifest, data
 
+def device_identity(source):
+    # Existing package embeds headset identity in controller.py. Do not transplant it.
+    names = {"ADDRESS", "NAME", "MUSE_ADDRESS", "HEADSET_ADDRESS", "HEADSET_NAME"}
+    values = {}
+    for node in ast.parse(source).body:
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name) and target.id in names:
+                    values[target.id] = ast.dump(node.value, include_attributes=False)
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            if node.target.id in names:
+                values[node.target.id] = ast.dump(node.value, include_attributes=False)
+    return values
+
 def write_code(root, data, remove):
     for n in sorted(set(data) | set(remove)):
         p = safe_path(root, n)
@@ -326,6 +341,11 @@ def apply(root, artifact, version, sha):
         for n, value in manifest["dependencies"].items():
             if state["files"].get(n) != value:
                 fail("Dependency changes require a separately qualified deployment.")
+        controller = "zooo1/controller.py"
+        if controller not in data:
+            fail("Release must retain the device controller.")
+        if device_identity((root / controller).read_bytes()) != device_identity(data[controller]):
+            fail("Embedded headset configuration differs; keep this device identity unchanged.")
         paths = set(state["files"]) | set(data)
         for n in paths:
             safe_path(root, n)

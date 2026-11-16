@@ -162,6 +162,13 @@ Bootstrap never pulls Pi 1's code or installs a dependency.
 The candidate manifest requires exact Python patch version, architecture, OS,
 libc version and installed distribution versions to match Pi 1's tested release.
 The two requirements files must also match Pi 2's baseline byte-for-byte.
+The inspected app also embeds headset identity in controller.py. The updater compares
+its ADDRESS/NAME and related headset assignments and refuses a candidate that would
+transplant another device's identity. If Pi 2 has different inline headset settings,
+prepare a separate Pi 2 candidate privately on Pi 1 retaining Pi 2's exact reviewed
+assignments; bench-qualify it on Pi 2 before research use. Do not copy Pi 1's identity
+to make this check pass. Moving identity into local configuration would require a
+separately reviewed application change; this generic tool does not redesign the app.
 If they differ, the updater refuses. Resolve differences in a separate qualified
 environment; never run pip install or the legacy INSTALL.sh over the working Pi
 just to force an update. Dependency-changing releases are deliberately out of scope.

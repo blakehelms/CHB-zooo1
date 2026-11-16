@@ -160,6 +160,17 @@ class SafetyTests(unittest.TestCase):
                 u.apply(self.root, path, "v0.1.1", sha)
         self.assertEqual(u.inventory(self.root), self.state["files"])
 
+    def test_embedded_device_identity_is_not_transplanted(self):
+        path, sha = self.artifact()
+        (self.root / "zooo1/controller.py").write_text("ADDRESS = 'device-two'\n")
+        state = dict(self.state, files=u.inventory(self.root))
+        u.dump(self.sd / "state.json", state)
+        with patch.object(u, "proc_check"), patch.object(u, "environment", return_value=self.env):
+            with self.assertRaisesRegex(RuntimeError, "headset configuration differs"):
+                u.apply(self.root, path, "v0.1.1", sha)
+        self.assertEqual((self.root / "zooo1/controller.py").read_text(), "ADDRESS = 'device-two'\n")
+        self.assert_protected()
+
     def test_links_and_duplicates_refused(self):
         for link in (True, False):
             path = Path(self.tmp.name) / "bad.tar.gz"
