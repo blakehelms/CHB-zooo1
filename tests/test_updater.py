@@ -2,6 +2,7 @@ import fcntl
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
 import tarfile
 import tempfile
@@ -159,6 +160,24 @@ class SafetyTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "Cancelled"):
                 u.apply(self.root, path, "v0.1.1", sha)
         self.assertEqual(u.inventory(self.root), self.state["files"])
+
+    def test_process_check_does_not_inspect_unrelated_cwd(self):
+        proc = Path(self.tmp.name) / "proc"
+        entry = proc / "99999999"
+        entry.mkdir(parents=True)
+        (entry / "cmdline").write_bytes(b"/usr/bin/dbus-daemon\\0")
+        (proc / "self").mkdir()
+        (proc / "self/cmdline").write_bytes(b"python3")
+        real_path = Path
+        def fake_path(value):
+            return proc if value == "/proc" else proc / "self/cmdline"
+        with patch.object(u, "Path", side_effect=fake_path), \
+             patch.object(real_path, "resolve", side_effect=PermissionError("protected cwd")):
+            u.proc_check(self.root)
+        (entry / "cmdline").write_bytes(b"python3 -m zooo1 --no-browser")
+        with patch.object(u, "Path", side_effect=fake_path):
+            with self.assertRaisesRegex(RuntimeError, "Close zooo1"):
+                u.proc_check(self.root)
 
     def test_embedded_device_identity_is_not_transplanted(self):
         path, sha = self.artifact()
