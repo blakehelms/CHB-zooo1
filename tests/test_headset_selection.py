@@ -6,13 +6,14 @@ import importlib.util
 import json
 from pathlib import Path
 from queue import Empty, Queue
+import runpy
 import sys
 import tempfile
 import threading
 import time
 import types
 import unittest
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 sys.dont_write_bytecode = True
 APP = Path(__file__).parents[1] / "app"
@@ -36,6 +37,45 @@ from zooo1.acquisition import Sample, SensorBatch
 from zooo1.muse import MuseSource
 
 A, B = [x["address"] for x in ctl.HEADSET_CHOICES]
+
+
+class RuntimeCheckTests(unittest.TestCase):
+    def test_runtime_check_uses_the_installed_muse_adapter(self):
+        with tempfile.TemporaryDirectory() as prefix:
+            executable = Path(prefix) / "bin" / "OpenMuse"
+            executable.parent.mkdir()
+            executable.touch()
+            source = json.dumps({
+                "url": "https://github.com/DominiqueMakowski/OpenMuse/archive/"
+                       "a9be252188321e269537eabf609bc207be293f8c.zip",
+            })
+            dist = types.SimpleNamespace(version="0.1.8", read_text=lambda name: source)
+            modules = {
+                "bleak": types.ModuleType("bleak"),
+                "bleak.backends.bluezdbus.client": types.SimpleNamespace(BleakClientBlueZDBus=object),
+                "mne_lsl.lsl": types.SimpleNamespace(
+                    StreamInlet=object, resolve_streams=lambda: [], local_clock=lambda: 1.0
+                ),
+                "PyQt6": None,
+                **{name: types.ModuleType(name) for name in ("numpy", "pandas", "matplotlib", "vispy")},
+            }
+            cli_help = [
+                types.SimpleNamespace(stdout="--address --sensors --clock"),
+                types.SimpleNamespace(stdout="--address"),
+            ]
+            with patch.dict(sys.modules, modules), patch.object(sys, "path", sys.path[:]), \
+                 patch.object(sys, "prefix", prefix), patch.object(sys, "version_info", (3, 13)), \
+                 patch("platform.system", return_value="Linux"), \
+                 patch("importlib.metadata.distribution", return_value=dist), \
+                 patch("subprocess.run", side_effect=cli_help) as run, patch("builtins.print"):
+                runpy.run_path(str(APP / "scripts/check-runtime.py"), run_name="__main__")
+
+            self.assertEqual(run.call_args_list, [
+                call([str(executable), command, "--help"], capture_output=True, text=True,
+                     timeout=30, check=True)
+                for command in ("stream", "view")
+            ])
+
 
 class SelectionTests(unittest.TestCase):
     def setUp(self):

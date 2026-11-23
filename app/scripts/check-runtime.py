@@ -17,7 +17,7 @@ def main():
         raise RuntimeError('Run with the Pi Python 3.13 virtual environment.')
     from zooo1.controller import ADDRESS
     from zooo1.muse import MuseSource
-    executable, _, _ = MuseSource(ADDRESS)._dependencies()
+    executable, stream_inlet, resolve_streams, local_clock = MuseSource(ADDRESS)._dependencies()
     dist = metadata.distribution('OpenMuse')
     source = json.loads(dist.read_text('direct_url.json') or '{}')
     url = urlsplit(source.get('url', ''))
@@ -26,9 +26,8 @@ def main():
         raise RuntimeError('OpenMuse must come from the exact GitHub revision in requirements.txt.')
     import bleak
     from bleak.backends.bluezdbus.client import BleakClientBlueZDBus
-    from mne_lsl.lsl import StreamInlet, resolve_streams, local_clock
     import numpy, pandas, matplotlib, vispy
-    if not callable(StreamInlet) or not callable(resolve_streams) or local_clock() <= 0:
+    if not callable(stream_inlet) or not callable(resolve_streams) or local_clock() <= 0:
         raise RuntimeError('Native LSL runtime is unavailable.')
     for command, flags in [('stream', ('--address', '--sensors', '--clock')),
                            ('view', ('--address',))]:
