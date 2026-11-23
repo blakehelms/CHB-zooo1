@@ -7,7 +7,7 @@ on:
         required: true
         type: string
       approval:
-        description: 'After Pi 1 bench testing and source review, type APPROVE followed by the version (APPROVE v0.1.1)'
+        description: 'After source review, type APPROVE followed by the version (APPROVE v0.1.3)'
         required: true
         type: string
 permissions:
@@ -52,5 +52,5 @@ jobs:
           VERSION: ${{ inputs.version }}
           RELEASE_COMMIT: ${{ github.sha }}
         run: |
-          printf '%s\n' 'ZOOO1_APPROVED_RELEASE=1' '' 'Approved code-only zooo1 release from the reviewed source commit below.' "Source commit: $RELEASE_COMMIT" 'Pi 1 baseline acquisition was bench tested; per-device settings remain local. Perform device acceptance checks before research use.' > release-notes.txt
+          printf '%s\n' 'ZOOO1_APPROVED_RELEASE=1' '' 'Approved code-only zooo1 release from the reviewed source commit below.' "Source commit: $RELEASE_COMMIT" 'Per-device settings remain local. Perform device acceptance checks before research use.' > release-notes.txt
           gh release create "zooo1-$VERSION" "dist/zooo1-$VERSION.tar.gz" --target "$RELEASE_COMMIT" --title "zooo1 $VERSION" --notes-file release-notes.txt

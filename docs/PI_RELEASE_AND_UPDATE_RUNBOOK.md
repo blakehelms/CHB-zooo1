@@ -65,7 +65,10 @@ separately. An application-only release uses the existing environment.
 These tests use synthetic fixtures and verify source, packaging and updater
 behavior. Use Pi 1 and a real Muse to verify acquisition.
 
-## 2. Bench-test on Pi 1 before approving publication
+## 2. Optional Pi 1 candidate test
+
+Use this procedure to test a candidate before publication if needed. You can
+also run the hardware acceptance checks after installing the published release.
 
 End any session, wait for it to finish saving, stop the foreground launcher with
 Ctrl+C, and close the viewer and any separate OpenMuse stream. Use the ordinary
@@ -95,15 +98,15 @@ Avoid using copied venvs with stale paths. Follow the existing
 
 Perform the hardware acceptance steps below. Keep the test recordings on Pi 1.
 If acquisition or saving fails, save the local diagnostics, roll back the test
-installation and fix the candidate before approving a release.
+installation and resolve the issue before research use.
 
 ## 3. Publish from GitHub
 
 Open [Publish approved zooo1 release](https://github.com/blakehelms/CHB-zooo1/actions/workflows/publish-release.yml)
 in an authorized GitHub session. Select **Run workflow**, choose branch `main`,
 enter the chosen version, and enter `APPROVE vX.Y.Z` as the approval text
-after Pi 1 bench qualification and source review. If the GitHub CLI is already
-authenticated with workflow permission, the equivalent is:
+after source review. If the GitHub CLI is already authenticated with workflow
+permission, the equivalent is:
 
 ```sh
 VERSION=v0.1.3

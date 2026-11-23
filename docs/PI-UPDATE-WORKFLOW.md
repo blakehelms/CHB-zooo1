@@ -175,14 +175,16 @@ identity; do not embed a credential in a URL or script:
 Open a pull request and inspect the full diff and GitHub safety checks. Only merge
 after review. This does NOT release or update a Pi.
 
-Test the candidate on Pi 1: login, headset identity, real/synthetic status, connection,
-fresh EEG, begin/end, saved CSV, interrupted-session handling and optional viewer.
-Confirm saving finishes and stop acquisition.
+Run hardware acceptance checks on Pi 1 before research use. You can test a local
+candidate or install the published release first. Check login, headset identity,
+real/synthetic status, connection, fresh EEG, begin/end, saved CSV,
+interrupted-session handling and the optional viewer. Confirm saving finishes and
+stop acquisition.
 If dependencies changed, separately qualify them and update only the reviewed package
 versions in release/qualified-runtime.json. Do not upload pip configuration/direct URL
 credentials, whole dependency snapshots from private projects or any environment.
 
-After Pi 1 testing, open GitHub on Pi 1 in the owner's existing authenticated browser:
+After source review, open the release workflow in an authorized GitHub session:
 
 https://github.com/blakehelms/CHB-zooo1/actions/workflows/publish-release.yml
 
@@ -194,10 +196,8 @@ The workflow's built-in token has only this repository's release-write permissio
 no credential is installed on either Pi or added to source.
 It will not run on push, a schedule or an experiment.
 
-Do not approve a version before testing. Do not replace an existing tag/version's asset.
-The first release is the previously bench-tested Pi 1 baseline plus reviewed local
-settings loading and generic headset wording; software checks do not prove a new
-hardware/experimental qualification.
+Do not replace an existing tag/version's asset. Software checks verify packaging
+and updater behavior. Hardware acceptance checks verify acquisition on the Pis.
 Both desktop buttons can now find this approved version. Each Pi must be stopped and
 the operator must confirm installation. Test device behavior before research use.
 
