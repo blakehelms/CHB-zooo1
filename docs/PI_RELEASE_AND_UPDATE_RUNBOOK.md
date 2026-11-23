@@ -70,7 +70,7 @@ behavior. Use Pi 1 and a real Muse to verify acquisition.
 End any session, wait for it to finish saving, stop the foreground launcher with
 Ctrl+C, and close the viewer and any separate OpenMuse stream. Use the ordinary
 lab user. Check the existing desktop command with
-`rg '^Exec=' "$HOME/Desktop/Update-zooo1.desktop"`. The documented updater
+`sed -n '/^Exec=/p' "$HOME/Desktop/Update-zooo1.desktop"`. The documented updater
 checkout is `~/src/CHB-zooo1`; use the shortcut's actual script path if it differs.
 
 Use a previously qualified and updater-initialized Pi 1 development copy where
@@ -181,6 +181,18 @@ headset preference, `bench-recordings/`, and `.venv` remain in place.
 - Verify previous session folders remain accessible. Stop acquisition before
   changing deployments. Record the Pi, headset, version, and pass/fail summary
   without exporting the files or any participant information.
+
+### Multisensor recording files
+
+The recorder keeps the existing `raw.csv` EEG column layout. The additional
+files are `accgyro.csv` (accelerometer and gyroscope), `optics.csv` (raw
+decoded PPG/fNIRS optical channels), and `battery.csv` (reported battery
+percentage). Each saves the channel values and timestamps at the stream's
+native rate. `manifest.json` reports the observed streams, counts, channel
+names, rates and any read errors. A stream without samples has no CSV.
+Compare the `source_time` values across streams and use `lsl_time` in
+`events.jsonl` to place markers on the same LSL clock. Verify alignment on
+hardware before using it for time-sensitive analysis.
 
 ## Recovery and troubleshooting
 

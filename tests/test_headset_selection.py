@@ -1,9 +1,11 @@
-"""Headset selection safety tests. Fake sources only; no Bluetooth or real recording."""
+"""Acquisition safety tests. Fake sources only; no Bluetooth or real recordings."""
 import ast
+import csv
 import http.client
 import importlib.util
 import json
 from pathlib import Path
+from queue import Empty, Queue
 import sys
 import tempfile
 import threading
@@ -30,6 +32,8 @@ ctl.__package__ = "zooo1"
 sys.modules["zooo1.controller"] = ctl
 exec(compile(tree, str(source), "exec"), ctl.__dict__)
 from zooo1.web import make_server
+from zooo1.acquisition import Sample, SensorBatch
+from zooo1.muse import MuseSource
 
 A, B = [x["address"] for x in ctl.HEADSET_CHOICES]
 
@@ -195,6 +199,178 @@ class RouteTests(unittest.TestCase):
         self.c.state="recording"
         self.assertEqual(self.post(),409)
         self.assertFalse(self.c.switch_requested.is_set())
+
+
+class SensorCaptureTests(unittest.TestCase):
+    FORM = {"name": "Fictional fixture", "dob": "2000-01-01", "uin": "",
+            "gender": "Other", "handedness": "Right"}
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+
+    def test_session_records_native_rate_streams_and_keeps_eeg_format(self):
+        chunks = Queue()
+
+        class FakeMuse:
+            sensors = ({}, {})
+
+            def connect(self, cancel):
+                return ["TP9", "AF7", "AF8", "TP10"]
+
+            def read(self, cancel):
+                try:
+                    samples, self.sensors = chunks.get(timeout=0.01)
+                    return samples
+                except Empty:
+                    self.sensors = ({}, {})
+                    return []
+
+            def read_sensors(self, cancel):
+                return self.sensors
+
+            def event_time(self):
+                return 101.25
+
+            def close(self):
+                pass
+
+        controller = ctl.Controller(self.root, source_factory=FakeMuse,
+                                    writer_factory=lambda: ctl.BenchWriter(self.root / "bench-recordings"))
+        worker = threading.Thread(target=controller.run)
+        worker.start()
+        try:
+            chunks.put(([Sample(100.0, (1, 2, 3, 4), time.monotonic())], ({}, {})))
+            self.wait_until(lambda: controller.snapshot()["can_start"])
+            controller.begin(self.FORM)
+            now = time.monotonic()
+            sensor_batches = {
+                "accgyro": SensorBatch(("AX", "AY", "AZ", "GX", "GY", "GZ"), 52.0, [
+                    Sample(100.01, (0, 0, 0, 0, 0, 0), now - 10),
+                    Sample(100.02, (1, 2, 3, 4, 5, 6), now),
+                    Sample(100.04, (6, 5, 4, 3, 2, 1), now),
+                ]),
+                "optics": SensorBatch(("NIR1", "NIR2", "IR1", "IR2"), 64.0, [
+                    Sample(100.02, (0.1, 0.2, 0.3, 0.4), now),
+                ]),
+            }
+            chunks.put(([Sample(100.04, (5, 6, 7, 8), now)], (sensor_batches, {})))
+            self.wait_until(lambda: controller.snapshot()["confirmed"] == 1)
+            chunks.put(([Sample(100.07, (8, 7, 6, 5), time.monotonic())],
+                        ({}, {"optics": "stream_read_failed"})))
+            self.wait_until(lambda: controller.snapshot()["confirmed"] == 2)
+            controller.marker()
+            controller.end()
+        finally:
+            controller.stop.set()
+            worker.join(3)
+        self.assertFalse(worker.is_alive())
+        recording, = (self.root / "bench-recordings").iterdir()
+        with (recording / "raw.csv").open(newline="") as f:
+            header, *eeg = list(csv.reader(f))
+        self.assertEqual(header, ["synthetic", "source_time", "received_monotonic_s",
+                                  "TP9", "AF7", "AF8", "TP10"])
+        self.assertEqual([row[1] for row in eeg], ["100.04", "100.07"])
+        with (recording / "accgyro.csv").open(newline="") as f:
+            header, *motion = list(csv.reader(f))
+        self.assertEqual(header[3:], ["AX", "AY", "AZ", "GX", "GY", "GZ"])
+        self.assertEqual([row[1] for row in motion], ["100.02", "100.04"])
+        manifest = json.loads((recording / "manifest.json").read_text())
+        self.assertEqual(manifest["status"], "complete")
+        self.assertEqual(manifest["schema_version"], 2)
+        self.assertEqual(manifest["samples"], len(eeg))
+        self.assertEqual(manifest["sensor_streams"]["accgyro"]["samples"], len(motion))
+        self.assertEqual(manifest["sensor_streams"]["optics"]["samples"], 1)
+        self.assertEqual(manifest["sensor_streams"]["optics"]["issue"], "stream_read_failed")
+        self.assertEqual(manifest["sensor_streams"]["battery"]["status"], "not_observed")
+        self.assertFalse((recording / "battery.csv").exists())
+        events = [json.loads(line) for line in (recording / "events.jsonl").read_text().splitlines()]
+        self.assertEqual([e["kind"] for e in events], ["manual_start", "researcher_marker", "manual_end"])
+        self.assertTrue(all(e["lsl_time"] == 101.25 for e in events))
+
+    def wait_until(self, ready):
+        deadline = time.monotonic() + 2
+        while not ready() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertTrue(ready())
+
+    def test_uses_pinned_openmuse_sensor_arguments_and_closes_inlets(self):
+        source = MuseSource(A)
+        source_id = A + "_eeg"
+        info = types.SimpleNamespace(source_id=source_id, stype="EEG", n_channels=4, sfreq=256.0)
+        motion_info = types.SimpleNamespace(source_id=A + "_accgyro", stype="ACCGYRO",
+                                            n_channels=6, sfreq=52.0)
+        unrelated = types.SimpleNamespace(source_id=B + "_accgyro")
+        eeg = self.fake_inlet(["TP9", "AF7", "AF8", "TP10"], (1, 2, 3, 4))
+        motion = self.fake_inlet(["AX", "AY", "AZ", "GX", "GY", "GZ"], (0, 1, 0, 0, 5, 0))
+        process = types.SimpleNamespace(poll=lambda: None, terminate=lambda: None, wait=lambda **k: None)
+        outlets = {}
+
+        def resolve(*, source_id, **kwargs):
+            return outlets.get(source_id, [])
+
+        def start(*args, **kwargs):
+            outlets[source_id] = [info]
+            outlets[motion_info.source_id] = [unrelated, motion_info]
+            return process
+
+        with patch.object(source, "_dependencies", return_value=(
+            "/fixture/OpenMuse", lambda info, **kw: eeg if info.stype == "EEG" else motion,
+            resolve, lambda: 99.0,
+        )), patch("zooo1.muse.subprocess.Popen", side_effect=start) as popen:
+            source.connect(threading.Event())
+            try:
+                self.assertEqual(popen.call_args.args[0][4:9],
+                                 ["--sensors", "EEG", "ACCGYRO", "OPTICS", "BATTERY"])
+                self.assertEqual(source.event_time(), 99.0)
+                batches, issues = source.read_sensors(threading.Event())
+                self.assertEqual(issues, {})
+                self.assertEqual(batches["accgyro"].rate_hz, 52.0)
+                self.assertEqual(batches["accgyro"].samples[0].source_time, 100.0)
+            finally:
+                source.close()
+        self.assertTrue(eeg.closed)
+        self.assertTrue(motion.closed)
+        self.assertEqual(source.sensor_inlets, {})
+
+    def test_malformed_optional_data_leaves_eeg_available(self):
+        source = MuseSource(A)
+        motion = self.fake_inlet(["AX", "AY", "AZ", "GX", "GY", "GZ"], (0, 1))
+        source.sensor_inlets["accgyro"] = (motion, ("AX", "AY", "AZ", "GX", "GY", "GZ"), 52.0)
+        source.inlet = self.fake_inlet(["EEG"], (12.3,))
+        source.channels = ["EEG"]
+        source.process = types.SimpleNamespace(poll=lambda: 0)
+        source.next_sensor_check = time.monotonic() + 5
+        try:
+            batches, issues = source.read_sensors(threading.Event())
+            self.assertEqual(batches, {})
+            self.assertEqual(issues, {"accgyro": "stream_read_failed"})
+            source.process.poll = lambda: None
+            self.assertEqual(source.read(threading.Event())[0].values, (12.3,))
+        finally:
+            source.process.poll = lambda: 0
+            source.close()
+
+    @staticmethod
+    def fake_inlet(channels, values):
+        class Inlet:
+            closed = False
+
+            def open_stream(self, timeout):
+                pass
+
+            def get_sinfo(self, timeout):
+                return types.SimpleNamespace(get_channel_names=lambda: channels)
+
+            def pull_chunk(self, **kwargs):
+                return [values], [100.0]
+
+            def close_stream(self):
+                self.closed = True
+
+        return Inlet()
+
 
 if __name__=="__main__":
     unittest.main()
