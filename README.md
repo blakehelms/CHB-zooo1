@@ -22,3 +22,20 @@ installation into a private file before the first shared-code update.
 
 Tests run in GitHub Actions using synthetic fixtures. Passing software tests does not
 qualify Bluetooth, EEG signal quality or experiments. Each Pi needs acceptance checks.
+
+## Start every research or coding session here
+
+- [Mandatory agent workflow and handoff](AGENTS.md)
+- [Current project state, architecture, schemas and next session](docs/PROJECT_STATE.md)
+- [Release/install/rollback runbook](docs/PI_RELEASE_AND_UPDATE_RUNBOOK.md)
+- [Software, hardware and scientific validation](docs/VALIDATION.md)
+- [Project changelog](docs/CHANGELOG.md)
+
+As of November 23, the owner reports v0.1.4 on both Pis. Pi2/EC29 has a short
+complete four-stream bench capture; Pi1 full-stream acceptance is pending.
+The researcher monitor currently shows EEG; auxiliary live display is next.
+Recorded optics are **raw optics, not validated fNIRS**. IRB and approved encrypted
+production storage remain pending. See project state for dated evidence and limits.
+
+PRs require explicit owner approval before merging main. Publication and live Pi
+installation require separate approval. Documentation changes do not release software.

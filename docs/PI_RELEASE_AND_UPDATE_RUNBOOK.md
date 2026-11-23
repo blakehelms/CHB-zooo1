@@ -1,12 +1,44 @@
 # zooo1 Raspberry Pi releases
 
 Repository: [blakehelms/CHB-zooo1](https://github.com/blakehelms/CHB-zooo1).
-The confirmed deployment baseline as of November 23, 2026 is **v0.1.2** on both Pis.
-Pi 1 is the development and bench-test device. Pi 2 is the second research device.
-Both have **zooo1** and **Update zooo1** desktop shortcuts and use
-`~/Downloads/zooo1-raspberry-pi/`. Either Pi can select Muse EC25 or Muse EC29.
-Both have acquired real EEG. The last confirmed Pi 2 bench session finalized
-with 20,736 EEG samples in `raw.csv` (20,737 lines including its header).
+As of **November 23, 2026**, the owner reports **v0.1.4 installed on both Pis**.
+GitHub confirms the approved v0.1.4 release at source commit
+`b5be91061e6d81358f385f89f829ebf55977451d`. Pi2/EC29 has a complete short
+multi-stream bench manifest; Pi1 full multi-stream acceptance remains pending.
+See [PROJECT_STATE](PROJECT_STATE.md) for device details and evidence, and
+[VALIDATION](VALIDATION.md) for acceptance criteria. Neither this document nor
+a repository commit authorizes a live Pi change.
+
+## Approval boundaries and release history
+
+Prepare and review a concrete PR. **Explicit owner approval is required before
+merging main**, separately before publication, and separately before live Pi
+installation. Documentation alone does not need a software release. No push,
+PR or merge updates the Pis.
+
+The actual publishing workflow has only `version` and `approval` inputs.
+It runs manually on main; approval must exactly equal `APPROVE vX.Y.Z`.
+There is no Pi1-recording approval input in the current workflow. Its removal
+does not establish hardware acceptance or production approval.
+
+### v0.1.3 failure and v0.1.4 recovery
+
+[PR #8](https://github.com/blakehelms/CHB-zooo1/pull/8) documents that the
+multisensor adapter returned four dependency values, including the LSL clock,
+but v0.1.3's runtime script still unpacked three. Post-install verification
+failed; the updater's automatic rollback restored the prior code whose adapter
+still matched that script. v0.1.4 corrected unpacking and added a regression
+test using the production adapter with simulated dependencies. The owner
+subsequently reported both Pis updated; Pi2 supplied the bench manifest in
+PROJECT_STATE. This is not proof that every recovery path or both Pis'
+hardware acceptance passed.
+
+**Never skip runtime checks to get an installation through.** Preserve the
+private diagnostics and transaction state; determine whether automatic restore
+completed, then use recover or rollback as appropriate. Fix the contract in
+reviewed source, test it, and publish a new approved version. Do not edit an
+installed runtime script, alter state hashes, replace an existing asset, delete
+locks/pending state, or change dependencies to suppress a failure.
 
 ## Where the workflow lives
 
@@ -48,7 +80,7 @@ separately. An application-only release uses the existing environment.
 
    ```sh
    export PYTHONDONTWRITEBYTECODE=1
-   VERSION=v0.1.3  # Set to the chosen unused version.
+   VERSION=vX.Y.Z  # Replace with the chosen NEW unused numeric version before running.
    CANDIDATE_DIR="$(mktemp -d)"
    python3 -m unittest discover -s tests -v
    python3 tools/build_release.py "$VERSION" "$CANDIDATE_DIR/zooo1-$VERSION.tar.gz"
@@ -84,7 +116,7 @@ value from the reviewed build. Use the chosen version, path and reviewed digest:
 ```sh
 UPDATER="$HOME/src/CHB-zooo1/tools/update_zooo1.py"
 TEST_ROOT="$HOME/Downloads/zooo1-raspberry-pi"  # Set to the qualified dev root if using one.
-VERSION=v0.1.3
+VERSION=vX.Y.Z
 CANDIDATE="/path/to/zooo1-$VERSION.tar.gz"
 sha256sum "$CANDIDATE"
 python3 "$UPDATER" --root "$TEST_ROOT" install "$CANDIDATE" "$VERSION" REVIEWED_SHA256
@@ -109,7 +141,7 @@ after source review. If the GitHub CLI is already authenticated with workflow
 permission, the equivalent is:
 
 ```sh
-VERSION=v0.1.3
+VERSION=vX.Y.Z
 gh workflow run publish-release.yml --repo blakehelms/CHB-zooo1 --ref main \
   -f version="$VERSION" -f approval="APPROVE $VERSION"
 ```
@@ -167,35 +199,18 @@ headset preference, `bench-recordings/`, and `.venv` remain in place.
 
 ### Real Muse hardware acceptance on each Pi
 
-- Open the normal **zooo1** shortcut and use the existing researcher login.
-  Verify the saved headset selection, then connect to the expected physical Muse.
-  Confirm fresh real EEG, the expected channel names and a live trace.
-- Use fictional bench details and **Begin**, record a short sitting and gentle
-  movement check, add a researcher marker, and press **End**. Wait for
-  successful finalization. Check that `raw.csv` retains its EEG columns,
-  `events.jsonl` contains the marker, and `manifest.json` reports
-  `status: complete` and an EEG count equal to the data rows.
-- For a multisensor release, record for at least 30 seconds. Confirm motion
-  channels respond to movement, compare the timestamp ranges across EEG and
-  the auxiliary files, and reconcile their row counts with the manifest.
-  Record which optical and battery streams the headset actually emits.
-  Software tests alone cannot establish timing accuracy, optical validity,
-  or stream availability on either headset.
-- Verify previous session folders remain accessible. Stop acquisition before
-  changing deployments. Record the Pi, headset, version, and pass/fail summary
-  without exporting the files or any participant information.
+Follow [VALIDATION: hardware acceptance](VALIDATION.md#hardware-acceptance)
+and record each device/headset result in PROJECT_STATE. Use fictional bench
+details and keep files local. Confirm EEG and every intended auxiliary stream,
+markers, finalization, timestamps, screens and preserved local state. A complete
+manifest can coexist with absent/failed optional streams; inspect each entry.
+Raw optics must not be presented as validated fNIRS.
 
-### Multisensor recording files
-
-The recorder keeps the existing `raw.csv` EEG column layout. The additional
-files are `accgyro.csv` (accelerometer and gyroscope), `optics.csv` (raw
-decoded PPG/fNIRS optical channels), and `battery.csv` (reported battery
-percentage). Each saves the channel values and timestamps at the stream's
-native rate. `manifest.json` reports the observed streams, counts, channel
-names, rates and any read errors. A stream without samples has no CSV.
-Compare the `source_time` values across streams and use `lsl_time` in
-`events.jsonl` to place markers on the same LSL clock. Verify alignment on
-hardware before using it for time-sensitive analysis.
+The authoritative file/schema description is in
+[PROJECT_STATE](PROJECT_STATE.md#recorded-data-contract), derived from
+`app/zooo1/storage.py`. There are three metadata columns before sensor values
+in every CSV; absent optional streams produce no CSV. Timing/units remain
+subject to the validation protocol.
 
 ## Recovery and troubleshooting
 

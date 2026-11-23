@@ -1,5 +1,11 @@
 # zooo1: click to update from GitHub
 
+For current deployment evidence and next tasks, read [PROJECT_STATE](PROJECT_STATE.md).
+For routine release/install/recovery commands, use the [release runbook](PI_RELEASE_AND_UPDATE_RUNBOOK.md).
+This guide retains one-time provisioning details; it does not authorize repeating
+setup on either existing installation. Explicit owner approval is required before
+merging main, publishing a release, or changing a live Pi.
+
 ## What the button does
 
 When clicked, **Update zooo1**:
@@ -167,13 +173,13 @@ identity; do not embed a credential in a URL or script:
     cd ~/src/CHB-zooo1
     git switch -c development/my-change
     python3 -m unittest discover -s tests -v
-    git add app tools tests docs release/qualified-runtime.json
+    git add PATH_TO_EACH_REVIEWED_CHANGED_FILE
     git diff --cached
     git commit -m "Describe the tested change"
     git push origin HEAD
 
 Open a pull request and inspect the full diff and GitHub safety checks. Only merge
-after review. This does NOT release or update a Pi.
+after review and explicit owner approval of the concrete PR. This does NOT release or update a Pi.
 
 Run hardware acceptance checks on Pi 1 before research use. You can test a local
 candidate or install the published release first. Check login, headset identity,
