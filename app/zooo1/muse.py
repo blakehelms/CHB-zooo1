@@ -13,6 +13,8 @@ import threading
 import time
 from urllib.parse import urlsplit
 
+from .acquisition import AUXILIARY_STREAMS, Sample, SensorBatch
+
 
 class DependencyUnavailable(RuntimeError):
     """The reviewed streaming environment is unavailable; no scan was started."""
@@ -32,6 +34,11 @@ class MuseSource:
         self.inlet = None
         self.channels = []
         self.pending = []
+        self.sensor_inlets = {}
+        self.sensor_issues = {}
+        self.next_sensor_check = 0.0
+        self.sensor_cursor = 0
+        self.lsl_clock = None
 
     def _dependencies(self):
         try:
@@ -56,25 +63,28 @@ class MuseSource:
             if not (url.scheme == "https" and url.hostname in
                     ("github.com", "codeload.github.com") and valid_path):
                 raise RuntimeError("OpenMuse installed source is not the reviewed EEG project.")
-            from mne_lsl.lsl import StreamInlet, resolve_streams
+            from mne_lsl.lsl import StreamInlet, local_clock, resolve_streams
         except (ImportError, importlib.metadata.PackageNotFoundError) as exc:
             raise RuntimeError("Optional EEG OpenMuse / mne-lsl dependencies are missing. See docs/OPENMUSE.md.") from exc
         executable = Path(sys.prefix) / "bin" / "OpenMuse"
         if not executable.is_file():
             raise RuntimeError("OpenMuse executable missing in this Python environment.")
-        return executable, StreamInlet, resolve_streams
+        return executable, StreamInlet, resolve_streams, local_clock
 
     def connect(self, cancel):
         """Two bounded attempts; returns channel names only after receiving samples."""
         if self.process is not None or self.inlet is not None:
             raise RuntimeError("Muse source is already connected or connecting.")
-        executable, inlet_class, resolve = self._dependencies()
+        executable, self.inlet_class, self.resolve, self.lsl_clock = self._dependencies()
         if cancel.is_set():
             raise RuntimeError("Connection cancelled.")
         source_id = self.address + "_eeg"
         # Reject an already-running stream rather than attach to someone else's job.
-        if resolve(timeout=0.5, source_id=source_id, minimum=2):
+        if self.resolve(timeout=0.5, source_id=source_id, minimum=2):
             raise RuntimeError("An EEG stream for this address already exists. Stop it before starting zooo1.")
+        for sensor in AUXILIARY_STREAMS:
+            if self.resolve(timeout=0.1, source_id=f"{self.address}_{sensor}", minimum=2):
+                raise RuntimeError("A sensor stream for this address already exists. Stop it before starting zooo1.")
         last_error = "No verified EEG samples arrived."
         for _attempt in range(2):
             deadline = time.monotonic() + self.timeout
@@ -83,14 +93,15 @@ class MuseSource:
                     raise RuntimeError("Connection cancelled.")
                 self.process = subprocess.Popen(
                     [str(executable), "stream", "--address", self.address,
-                     "--sensors", "EEG", "--clock", "windowed"],
+                     "--sensors", "EEG", "ACCGYRO", "OPTICS", "BATTERY",
+                     "--clock", "windowed"],
                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                 )
                 while time.monotonic() < deadline and not cancel.is_set():
                     if self.process.poll() is not None:
                         raise RuntimeError("OpenMuse exited before a verified stream arrived; check address, Bluetooth and environment.")
-                    matches = resolve(timeout=0.5, source_id=source_id, minimum=2)
+                    matches = self.resolve(timeout=0.5, source_id=source_id, minimum=2)
                     matches = [s for s in matches if s.source_id == source_id]
                     if len(matches) > 1:
                         raise RuntimeError("Ambiguous EEG stream identity; close other streamers.")
@@ -100,8 +111,8 @@ class MuseSource:
                     if (info.stype != "EEG" or info.n_channels not in (4, 8)
                             or not math.isclose(float(info.sfreq), 256.0)):
                         raise RuntimeError("EEG metadata does not match the reviewed Muse adapter.")
-                    self.inlet = inlet_class(info, max_buffered=5, recover=False,
-                                             processing_flags=None)
+                    self.inlet = self.inlet_class(info, max_buffered=5, recover=False,
+                                                  processing_flags=None)
                     self.inlet.open_stream(timeout=min(1.0, max(0.01, deadline-time.monotonic())))
                     full_info = self.inlet.get_sinfo(timeout=min(1.0, max(0.01, deadline-time.monotonic())))
                     channels = full_info.get_channel_names()
@@ -109,7 +120,7 @@ class MuseSource:
                         raise RuntimeError("EEG channel labels missing; refusing to guess channel order.")
                     self.channels = list(channels)
                     while time.monotonic() < deadline and not cancel.is_set():
-                        self.pending = self._pull()
+                        self.pending = self._pull(self.inlet, self.channels)
                         if self.pending:
                             return list(self.channels)
                         if self.process.poll() is not None:
@@ -124,19 +135,19 @@ class MuseSource:
                     break
         raise RuntimeError(last_error)
 
-    def _pull(self):
-        from .acquisition import Sample
-        values, timestamps = self.inlet.pull_chunk(timeout=0.0, max_samples=1024)
+    @staticmethod
+    def _pull(inlet, channels):
+        values, timestamps = inlet.pull_chunk(timeout=0.0, max_samples=1024)
         if len(values) != len(timestamps):
-            raise RuntimeError("EEG sample/timestamp count mismatch.")
+            raise RuntimeError("LSL sample/timestamp count mismatch.")
         received = time.monotonic()
         result = []
         for timestamp, row in zip(timestamps, values):
             row = tuple(float(v) for v in row)
             timestamp = float(timestamp)
-            if (len(row) != len(self.channels) or not math.isfinite(timestamp)
+            if (len(row) != len(channels) or not math.isfinite(timestamp)
                     or not all(math.isfinite(v) for v in row)):
-                raise RuntimeError("Invalid EEG data received; recording stopped.")
+                raise RuntimeError("Invalid data received from LSL.")
             result.append(Sample(timestamp, row, received))
         return result
 
@@ -150,16 +161,73 @@ class MuseSource:
         if self.pending:
             result, self.pending = self.pending, []
             return result
-        result = self._pull()
+        result = self._pull(self.inlet, self.channels)
         if not result:
             cancel.wait(0.02)
         return result
+
+    def event_time(self):
+        return self.lsl_clock()
+
+    def _discover_sensor(self):
+        wanted = [s for s in AUXILIARY_STREAMS
+                  if s not in self.sensor_inlets and s not in self.sensor_issues]
+        if not wanted or time.monotonic() < self.next_sensor_check:
+            return
+        self.next_sensor_check = time.monotonic() + 0.5
+        sensor = wanted[self.sensor_cursor % len(wanted)]
+        self.sensor_cursor += 1
+        source_id = f"{self.address}_{sensor}"
+        try:
+            matches = [s for s in self.resolve(timeout=0.1, source_id=source_id, minimum=2)
+                       if s.source_id == source_id]
+            if not matches:
+                return
+            if len(matches) != 1:
+                self.sensor_issues[sensor] = "ambiguous_stream"
+                return
+            info = matches[0]
+            stream_type, rate, sizes = AUXILIARY_STREAMS[sensor]
+            if (info.stype != stream_type or info.n_channels not in sizes
+                    or not math.isclose(float(info.sfreq), rate)):
+                self.sensor_issues[sensor] = "invalid_stream_metadata"
+                return
+            # Keep ownership even if obtaining channel labels later fails.
+            inlet = self.inlet_class(info, max_buffered=5, recover=False, processing_flags=None)
+            self.sensor_inlets[sensor] = (inlet, (), rate)
+            inlet.open_stream(timeout=0.2)
+            channels = tuple(inlet.get_sinfo(timeout=0.2).get_channel_names() or ())
+            if len(channels) != info.n_channels or not all(channels) or len(set(channels)) != len(channels):
+                self.sensor_issues[sensor] = "invalid_channel_labels"
+                return
+            self.sensor_inlets[sensor] = (inlet, channels, rate)
+        except Exception:
+            self.sensor_issues[sensor] = "stream_open_failed"
+
+    def read_sensors(self, cancel):
+        batches = {}
+        if not cancel.is_set():
+            self._discover_sensor()
+            for sensor, (inlet, channels, rate) in self.sensor_inlets.items():
+                if sensor not in self.sensor_issues:
+                    try:
+                        batches[sensor] = SensorBatch(channels, rate, self._pull(inlet, channels))
+                    except Exception:
+                        self.sensor_issues[sensor] = "stream_read_failed"
+        return batches, self.sensor_issues
 
     def close(self):
         """Idempotently close inlet and stop only our owned subprocess."""
         inlet, self.inlet = self.inlet, None
         process, self.process = self.process, None
         self.pending = []
+        inlets = [entry[0] for entry in self.sensor_inlets.values()]
+        self.sensor_inlets.clear()
+        self.sensor_issues.clear()
+        self.next_sensor_check = 0.0
+        self.sensor_cursor = 0
+        if inlet is not None:
+            inlets.append(inlet)
         error = None
         if process is not None:
             try:
@@ -172,19 +240,19 @@ class MuseSource:
                         process.wait(timeout=0.5)
             except Exception as exc:
                 error = exc
-        if inlet is not None:
+        for owned_inlet in inlets:
             # The native API offers no timeout. Keep the owned process cleanup
             # independent and never block the controller indefinitely on it.
             closed = threading.Event()
             inlet_errors = []
 
-            def close_inlet():
+            def close_inlet(handle=owned_inlet, finished=closed, errors=inlet_errors):
                 try:
-                    inlet.close_stream()
+                    handle.close_stream()
                 except Exception as exc:
-                    inlet_errors.append(exc)
+                    errors.append(exc)
                 finally:
-                    closed.set()
+                    finished.set()
 
             threading.Thread(target=close_inlet, name="muse-inlet-cleanup",
                              daemon=True).start()

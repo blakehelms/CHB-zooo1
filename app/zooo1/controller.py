@@ -96,8 +96,11 @@ class BenchWriter:
             finally:
                 os.close(fd)
 
-    def append(self, samples):
+    def append(self, samples, sensors=None, start_mono=None):
         self.sink.append(samples)
+        if sensors is not None:
+            batches, issues = sensors
+            self.sink.append_sensors(batches, issues, start_mono)
         self.sink.sync()
         self.confirmed_count = self.sink.count
 
@@ -178,6 +181,9 @@ class Controller:
 
     def _event(self, kind):
         event = {'kind': kind, 'utc': time.time(), 'received_monotonic': time.monotonic()}
+        event_clock = getattr(self.source, 'event_time', None)
+        if event_clock is not None:
+            event['lsl_time'] = event_clock()
         self.events.append(event)
         if self.writer:
             self.writer.event(event)
@@ -217,7 +223,8 @@ class Controller:
                 self.storage = 'opening'
                 self._persist()
                 self.writer.begin(dict(session_id=self.session_id, started_utc=self.started,
-                                       headset_id=self.address, synthetic=False, purpose='NO PARTICIPANTS: BENCH ONLY'), self.channels)
+                                       headset_id=self.address, synthetic=False, purpose='NO PARTICIPANTS: BENCH ONLY',
+                                       capture_muse_sensors=hasattr(self.source, 'read_sensors')), self.channels)
                 self._event('manual_start')
                 self.storage = 'writing'
                 self._persist()
@@ -406,6 +413,9 @@ class Controller:
                     continue
             try:
                 samples = self.source.read(self.connection_cancel)
+                read_sensors = getattr(self.source, 'read_sensors', None)
+                sensors = read_sensors(self.connection_cancel) if read_sensors else None
+                sensor_samples = sensors is not None and any(batch.samples for batch in sensors[0].values())
                 with self.lock:
                     if self.switch_requested.is_set():
                         continue
@@ -419,17 +429,21 @@ class Controller:
                         self.last_source = times[-1]
                         self.last = time.monotonic()
                         self.points.extend([[s.source_time, *s.values] for s in samples])
-                        if self.state == 'recording':
-                            samples = [s for s in samples if s.received_mono >= self.start_mono]
-                            self.received += len(samples)
-                            try:
-                                self.writer.append(samples)
-                                self.confirmed = self.writer.confirmed_count
-                                self._persist()
-                            except Exception:
-                                self._storage_failed()
                     elif self.last is not None and time.monotonic() - self.last > 3:
                         raise ConnectionError('No fresh samples')
+                    if self.state == 'recording' and (samples or sensor_samples):
+                        samples = [s for s in samples if s.received_mono >= self.start_mono]
+                        self.received += len(samples)
+                        try:
+                            if sensors is None:
+                                self.writer.append(samples)
+                            else:
+                                self.writer.append(samples, sensors, self.start_mono)
+                            self.confirmed = self.writer.confirmed_count
+                            if samples:
+                                self._persist()
+                        except Exception:
+                            self._storage_failed()
                 self.stop.wait(.02)
             except Exception:
                 if self.switch_requested.is_set():
