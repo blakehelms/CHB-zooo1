@@ -16,6 +16,8 @@ journals and .venv stay on each Pi. No passwords, credential hashes, research da
 environments are published. The headset address is captured from each existing
 installation into a private file before the first shared-code update.
 
+[Pi release and update runbook](docs/PI_RELEASE_AND_UPDATE_RUNBOOK.md).
+
 [Setup, click-to-update, Pi 2 installation, publishing from Pi 1 and rollback](docs/PI-UPDATE-WORKFLOW.md).
 
 Tests run in GitHub Actions using synthetic fixtures. Passing software tests does not
